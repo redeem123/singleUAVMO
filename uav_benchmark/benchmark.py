@@ -52,6 +52,59 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
 }
 
 
+def _normalize_algorithm_name(name: str) -> str:
+    key = str(name).strip().lower()
+    if key in {"nmopso"}:
+        return "NMOPSO"
+    if key in {"rl-nmopso", "rlnmopso", "rl_nmopso"}:
+        return "RL-NMOPSO"
+    if key in {"mopso"}:
+        return "MOPSO"
+    if key in {"nsga-ii", "nsga2", "nsga_ii"}:
+        return "NSGA-II"
+    if key in {"nsga-iii", "nsga3", "nsga_iii"}:
+        return "NSGA-III"
+    if key in {"mo-mfea", "momfea"}:
+        return "MO-MFEA"
+    if key in {"mo-mfea-ii", "momfea2", "momfea-ii"}:
+        return "MO-MFEA-II"
+    if key in {"ctm-ea", "ctmea"}:
+        return "CTM-EA"
+    return str(name).strip()
+
+
+def _requested_algorithms(extra: dict[str, Any]) -> tuple[str, ...]:
+    raw = extra.get("algorithms")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        tokens = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple)):
+        tokens = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        return ()
+    normalized = [_normalize_algorithm_name(token) for token in tokens]
+    if not normalized:
+        return ()
+    # Keep order while removing duplicates
+    return tuple(dict.fromkeys(normalized))
+
+
+def _requested_problem_names(extra: dict[str, Any]) -> tuple[str, ...]:
+    raw = extra.get("problemNames")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        tokens = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple)):
+        tokens = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        return ()
+    if not tokens:
+        return ()
+    return tuple(dict.fromkeys(tokens))
+
+
 def _problem_name(problem_file: Path) -> str:
     name = problem_file.stem
     if name.startswith("terrainStruct_"):
@@ -68,16 +121,21 @@ def _algorithm_map() -> list[tuple[str, AlgorithmRunner]]:
     ]
 
 
-def _algorithm_map_for_mode(mode: str) -> list[tuple[str, AlgorithmRunner]]:
+def _algorithm_map_for_mode(mode: str, include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, AlgorithmRunner]]:
     if str(mode).lower() == "multi":
-        return [
+        mapping = [
             ("RL-NMOPSO", run_rl_nmopso),
             ("NMOPSO", run_nmopso),
             ("MOPSO", run_mopso),
             ("NSGA-II", run_nsga2),
             ("NSGA-III", run_nsga3),
         ]
-    return _algorithm_map()
+    else:
+        mapping = _algorithm_map()
+    if not include_algorithms:
+        return mapping
+    include_set = set(include_algorithms)
+    return [item for item in mapping if item[0] in include_set]
 
 
 def _fleet_from_problem_name(problem_name: str) -> int | None:
@@ -167,11 +225,20 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         problem_files = [path for path in all_problem_files if any(path.stem.endswith(suffix) for suffix in suffixes)]
         if not problem_files:
             problem_files = [path for path in all_problem_files if "_uav" in path.stem]
+    requested_problem_names = _requested_problem_names(params.extra)
+    if requested_problem_names:
+        requested_set = set(requested_problem_names)
+        problem_files = [
+            path
+            for path in problem_files
+            if _problem_name(path) in requested_set or _base_problem_name(_problem_name(path)) in requested_set
+        ]
     ensure_dir(params.results_dir)
 
     # Build task list: all (problem, algorithm) combinations
     tasks: list[tuple[Path, int, str, BenchmarkParams]] = []
-    algo_map = _algorithm_map_for_mode(mode)
+    requested = _requested_algorithms(params.extra)
+    algo_map = _algorithm_map_for_mode(mode, requested)
     for problem_index, problem_file in enumerate(problem_files, start=1):
         problem_name = _problem_name(problem_file)
         base_problem = _base_problem_name(problem_name)
@@ -183,7 +250,11 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         print("No benchmark tasks found for the selected mode/scenario settings.")
         return
 
-    n_workers = min(len(tasks), os.cpu_count() or 1)
+    worker_cap = int(params.extra.get("maxWorkers", 0)) if isinstance(params.extra, dict) else 0
+    if worker_cap > 0:
+        n_workers = min(len(tasks), worker_cap, os.cpu_count() or 1)
+    else:
+        n_workers = min(len(tasks), os.cpu_count() or 1)
     print(f"Running {len(tasks)} tasks across {n_workers} workers")
 
     with multiprocessing.Pool(processes=n_workers) as pool:

@@ -16,7 +16,7 @@ from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.mission_encoding import decision_size, decision_to_paths
 from uav_benchmark.core.nsga2_ops import crowding_distance, n_d_sort, tournament_selection
 from uav_benchmark.core.nsga3_ops import environmental_selection_nsga3, uniform_point
-from uav_benchmark.io.matlab import save_bp, save_mat, save_run_popobj
+from uav_benchmark.io.matlab import load_mat, save_bp, save_mat, save_run_popobj
 from uav_benchmark.io.results import ensure_dir
 from uav_benchmark.utils.gpu import resolve_gpu
 
@@ -336,6 +336,36 @@ def _finite_mean(values: list[float], default: float = 0.0) -> float:
     return float(np.mean(vector))
 
 
+def _resume_run_scores(
+    run_dir: Path,
+    problem_index: int,
+    objective_count: int,
+    compute_metrics: bool,
+) -> np.ndarray | None:
+    final_path = run_dir / "final_popobj.mat"
+    if not final_path.exists():
+        return None
+    if not compute_metrics:
+        return np.zeros(2, dtype=float)
+    try:
+        payload = load_mat(final_path)
+        pop_obj = np.asarray(payload.get("PopObj", np.zeros((0, objective_count), dtype=float)), dtype=float)
+        pop_obj = np.squeeze(pop_obj)
+        if pop_obj.ndim == 1 and pop_obj.size > 0:
+            pop_obj = pop_obj.reshape(1, -1)
+        if pop_obj.ndim != 2:
+            return None
+        return np.array(
+            [
+                cal_metric(1, pop_obj, problem_index, objective_count),
+                cal_metric(2, pop_obj, problem_index, objective_count),
+            ],
+            dtype=float,
+        )
+    except Exception:
+        return None
+
+
 def _parse_action_indices(raw: Any, fallback: tuple[int, ...], n_actions: int) -> np.ndarray:
     values: list[int] = []
     if raw is None:
@@ -458,6 +488,44 @@ def _save_multi_artifacts(
     save_mat(run_dir / "run_stats.mat", stats_payload)
 
 
+def _elite_refine_candidates(
+    archive: list[Candidate],
+    model: dict[str, Any],
+    fleet_size: int,
+    n_waypoints: int,
+    representation: str,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    span: np.ndarray,
+    sigma: float,
+    top_k: int,
+    iters: int,
+) -> list[Candidate]:
+    if not archive or top_k <= 0 or iters <= 0 or sigma <= 0.0:
+        return []
+    ranked = sorted(range(len(archive)), key=lambda idx: float(np.sum(archive[idx].objective)))
+    picks = ranked[: min(len(ranked), int(top_k))]
+    if not picks:
+        return []
+    trial_vectors: list[np.ndarray] = []
+    for _ in range(int(iters)):
+        for idx in picks:
+            base = archive[idx].vector
+            noise = np.random.normal(0.0, 1.0, size=base.shape) * float(sigma) * span
+            trial = np.clip(base + noise, lower, upper)
+            trial_vectors.append(np.asarray(trial, dtype=float))
+    if not trial_vectors:
+        return []
+    trial_population = np.stack(trial_vectors, axis=0)
+    return _evaluate_population(
+        trial_population,
+        model=model,
+        fleet_size=fleet_size,
+        n_waypoints=n_waypoints,
+        representation=representation,
+    )
+
+
 def _run_multi_pso(
     model: dict[str, Any],
     params: BenchmarkParams,
@@ -493,7 +561,20 @@ def _run_multi_pso(
     ensure_dir(results_path)
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
+    resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
     for run_idx in range(1, params.runs + 1):
+        run_dir = results_path / f"Run_{run_idx}"
+        if resume_existing_runs:
+            resume_scores = _resume_run_scores(
+                run_dir=run_dir,
+                problem_index=params.problem_index,
+                objective_count=objective_count,
+                compute_metrics=params.compute_metrics,
+            )
+            if resume_scores is not None:
+                if params.compute_metrics:
+                    run_scores[run_idx - 1] = resume_scores
+                continue
         run_start = time.perf_counter()
         population = np.random.uniform(lower, upper, size=(params.population, dimensions))
         velocity = np.zeros_like(population)
@@ -604,6 +685,17 @@ def _run_multi_pso(
         rl_reward_n_step = int(params.extra.get("rlRewardNStep", 5 if paper_nmopso_global else 1))
         rl_reward_n_step = max(1, rl_reward_n_step)
         rl_reward_gamma = float(np.clip(params.extra.get("rlRewardGamma", 0.90), 0.0, 1.0))
+        rl_hv_scale = float(max(1e-6, params.extra.get("rlRewardHvScale", 0.01)))
+        rl_reward_hv_w = float(params.extra.get("rlRewardHvWeight", 0.70))
+        rl_reward_feas_w = float(params.extra.get("rlRewardFeasibleWeight", 0.15))
+        rl_reward_div_w = float(params.extra.get("rlRewardDiversityWeight", 0.10))
+        rl_reward_conflict_w = float(params.extra.get("rlRewardConflictWeight", 0.05))
+        rl_elite_refine = bool(params.extra.get("rlEliteRefine", use_rl and paper_nmopso_global))
+        rl_elite_refine_top_k = int(max(0, params.extra.get("rlEliteRefineTopK", 3)))
+        rl_elite_refine_iters = int(max(0, params.extra.get("rlEliteRefineIters", 2)))
+        rl_elite_sigma_start = float(max(0.0, params.extra.get("rlEliteRefineSigmaStart", 0.06)))
+        rl_elite_sigma_end = float(max(0.0, params.extra.get("rlEliteRefineSigmaEnd", 0.015)))
+        rl_elite_trials_total = 0
 
         if controller is not None:
             raw_mode = str(params.extra.get("rlPolicyMode", "train")).strip().lower()
@@ -656,6 +748,7 @@ def _run_multi_pso(
         delta_cells = float(max(1, _hypergrid_occupied_count(archive_init, grid_cells))) if paper_nmopso else 1.0
         diversity_ref = float(np.mean(np.std(archive_init, axis=0))) if archive_init.size else 1.0
         diversity_ref = max(diversity_ref, 1e-9)
+        rl_div_scale = float(max(1e-9, params.extra.get("rlRewardDivScale", diversity_ref)))
         hv_ref_point = _fixed_hv_reference(archive_init)
 
         phase_enabled = bool(params.extra.get("rlPhaseGating", paper_nmopso_global))
@@ -860,6 +953,25 @@ def _run_multi_pso(
                 pbest_obj[replace] = current_obj[replace]
 
             archive = _archive_front(archive + candidates, max_size=archive_size)
+            if rl_elite_refine and use_rl and archive:
+                progress = generation / max(1, params.generations)
+                sigma = (1.0 - progress) * rl_elite_sigma_start + progress * rl_elite_sigma_end
+                refined = _elite_refine_candidates(
+                    archive=archive,
+                    model=model,
+                    fleet_size=fleet_size,
+                    n_waypoints=n_waypoints,
+                    representation=representation,
+                    lower=lower,
+                    upper=upper,
+                    span=span,
+                    sigma=float(sigma),
+                    top_k=rl_elite_refine_top_k,
+                    iters=rl_elite_refine_iters,
+                )
+                if refined:
+                    rl_elite_trials_total += len(refined)
+                    archive = _archive_front(archive + refined, max_size=archive_size)
             archive_matrix = _candidate_matrix(archive)
             finite_archive = archive_matrix[np.all(np.isfinite(archive_matrix), axis=1)]
             if finite_archive.size:
@@ -882,13 +994,16 @@ def _run_multi_pso(
             diversity_after = float(np.mean(np.std(finite_archive, axis=0))) if finite_archive.size > 0 else 0.0
 
             if controller is not None and action_idx >= 0:
-                delta_hv = float(np.tanh((hv_after - hv_now) / 0.01))
+                delta_hv = float(np.tanh((hv_after - hv_now) / rl_hv_scale))
                 delta_feasible = float(np.clip(feasible_after - feasible_ratio, -1.0, 1.0))
-                delta_diversity = float(np.tanh((diversity_after - diversity) / max(1e-9, diversity_ref)))
+                delta_diversity = float(np.tanh((diversity_after - diversity) / rl_div_scale))
                 conflict_penalty = float(np.clip(max(0.0, conflict_after) / 0.02, 0.0, 1.0))
                 reward = float(
                     np.clip(
-                        0.70 * delta_hv + 0.15 * delta_feasible + 0.10 * delta_diversity - 0.05 * conflict_penalty,
+                        rl_reward_hv_w * delta_hv
+                        + rl_reward_feas_w * delta_feasible
+                        + rl_reward_div_w * delta_diversity
+                        - rl_reward_conflict_w * conflict_penalty,
                         -1.0,
                         1.0,
                     )
@@ -946,7 +1061,6 @@ def _run_multi_pso(
                 except Exception:
                     rl_policy_saved = False
 
-        run_dir = results_path / f"Run_{run_idx}"
         ensure_dir(run_dir)
         if params.compute_metrics:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
@@ -972,6 +1086,18 @@ def _run_multi_pso(
                 "rlRewardNStep": float(rl_reward_n_step),
                 "rlRewardGamma": float(rl_reward_gamma),
                 "rlPhaseGating": float(1.0 if phase_enabled else 0.0),
+                "rlRewardHvScale": float(rl_hv_scale),
+                "rlRewardDivScale": float(rl_div_scale),
+                "rlRewardHvWeight": float(rl_reward_hv_w),
+                "rlRewardFeasibleWeight": float(rl_reward_feas_w),
+                "rlRewardDiversityWeight": float(rl_reward_div_w),
+                "rlRewardConflictWeight": float(rl_reward_conflict_w),
+                "rlEliteRefine": float(1.0 if rl_elite_refine else 0.0),
+                "rlEliteRefineTopK": float(rl_elite_refine_top_k),
+                "rlEliteRefineIters": float(rl_elite_refine_iters),
+                "rlEliteRefineSigmaStart": float(rl_elite_sigma_start),
+                "rlEliteRefineSigmaEnd": float(rl_elite_sigma_end),
+                "rlEliteRefineTrials": float(rl_elite_trials_total),
             }
         _save_multi_artifacts(
             run_dir=run_dir,
@@ -1049,7 +1175,20 @@ def _run_multi_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     ensure_dir(results_path)
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
+    resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
     for run_idx in range(1, params.runs + 1):
+        run_dir = results_path / f"Run_{run_idx}"
+        if resume_existing_runs:
+            resume_scores = _resume_run_scores(
+                run_dir=run_dir,
+                problem_index=params.problem_index,
+                objective_count=objective_count,
+                compute_metrics=params.compute_metrics,
+            )
+            if resume_scores is not None:
+                if params.compute_metrics:
+                    run_scores[run_idx - 1] = resume_scores
+                continue
         run_start = time.perf_counter()
         population = np.random.uniform(lower, upper, size=(params.population, dimensions))
         candidates = _evaluate_population(population, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
@@ -1091,7 +1230,6 @@ def _run_multi_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 elif generation > 1:
                     hv_history[generation - 1] = hv_history[generation - 2]
 
-        run_dir = results_path / f"Run_{run_idx}"
         ensure_dir(run_dir)
         if params.compute_metrics:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
@@ -1141,7 +1279,20 @@ def _run_multi_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     ensure_dir(results_path)
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
+    resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
     for run_idx in range(1, params.runs + 1):
+        run_dir = results_path / f"Run_{run_idx}"
+        if resume_existing_runs:
+            resume_scores = _resume_run_scores(
+                run_dir=run_dir,
+                problem_index=params.problem_index,
+                objective_count=objective_count,
+                compute_metrics=params.compute_metrics,
+            )
+            if resume_scores is not None:
+                if params.compute_metrics:
+                    run_scores[run_idx - 1] = resume_scores
+                continue
         run_start = time.perf_counter()
         population = np.random.uniform(lower, upper, size=(population_size, dimensions))
         candidates = _evaluate_population(population, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
@@ -1193,7 +1344,6 @@ def _run_multi_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 elif generation > 1:
                     hv_history[generation - 1] = hv_history[generation - 2]
 
-        run_dir = results_path / f"Run_{run_idx}"
         ensure_dir(run_dir)
         if params.compute_metrics:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})

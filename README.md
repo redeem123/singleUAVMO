@@ -62,6 +62,16 @@ Policy checkpoint modes (`--extra-json`):
 - `rlPolicyMode: "freeze"`: load checkpoint and run inference-only (no policy updates).
 - `rlPolicyCheckpointPath`: optional explicit checkpoint path; if omitted, a per-problem path is generated.
 
+Additional run controls (`--extra-json`):
+
+- `resumeExistingRuns: true|false`: skip completed `Run_*` folders and continue interrupted runs.
+- `problemNames: ["c_100_uav3", ...]`: run only selected problems/scenarios.
+- `rlEliteRefine: true|false` plus:
+  - `rlEliteRefineTopK`
+  - `rlEliteRefineIters`
+  - `rlEliteRefineSigmaStart`
+  - `rlEliteRefineSigmaEnd`
+
 ## Multi-UAV Paper Pipeline
 
 Run the paper artifact pipeline:
@@ -71,6 +81,18 @@ python3 -m uav_benchmark.cli paper-artifacts --project-root . --results-dir resu
 ```
 
 This runs benchmark + report + stats + multi-UAV plots.
+
+Train/freeze helper scripts:
+
+```bash
+python3 scripts/run_paper_full_trainfreeze.py
+python3 scripts/run_paper_first_problem_trainfreeze.py
+python3 scripts/run_paper_first_problem_trainfreeze_refine.py
+```
+
+- `run_paper_full_trainfreeze.py`: full multi-scenario baseline + RL warmstart + RL freeze pipeline.
+- `run_paper_first_problem_trainfreeze.py`: first-problem (`c_100_uav3`) benchmark with train/freeze protocol.
+- `run_paper_first_problem_trainfreeze_refine.py`: first-problem train/freeze with RL elite-refinement enabled.
 
 ## Core CLI Commands
 
