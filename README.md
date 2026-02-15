@@ -1,6 +1,10 @@
 # Python UAV Benchmark (Single + Multi-UAV)
 
-This repository contains the Python implementation of a constrained multi-objective UAV path planning benchmark, now supporting:
+## Brief Project Overview
+
+This repository provides a reproducible benchmark framework for constrained UAV path planning and mission optimization. It supports both single-UAV and multi-UAV experiments, compares multiple evolutionary baselines, and includes an RL-enhanced NMOPSO variant for learning-guided search.
+
+Current scope includes:
 
 - single-UAV workflows (backward compatible),
 - multi-UAV mission benchmarking (homogeneous point-to-point),
@@ -14,7 +18,7 @@ This repository contains the Python implementation of a constrained multi-object
 - Offer baseline evolutionary methods and RL-enhanced variants for comparative studies.
 - Generate paper-ready metrics and artifacts from scripted runs.
 
-## Setup
+## Setup / Run Instructions
 
 ```bash
 python3 -m pip install -r requirements-python.txt
@@ -79,7 +83,7 @@ python3 -m uav_benchmark.cli plots --project-root . --results-dir results
 python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 ```
 
-## Repository Structure
+## Directory Structure and Key Files
 
 - `uav_benchmark/`: Core Python package (algorithms, evaluators, analysis, CLI).
 - `problems/`: Terrain/problem definitions (`terrainStruct_*.mat`).
@@ -120,7 +124,7 @@ Metrics reports are written to `results/.../metrics/`:
 - Use `--gpu-mode force` to require a GPU backend; it falls back to CPU only when no backend is available and logs backend in `run_stats.mat`.
 - Scenario generation for `paper_medium` creates `terrainStruct_<base>_uav<K>.mat` problems on demand.
 
-## Contributing
+## Contribution Guidelines
 
 1. Fork the repository and create a feature branch.
 2. Keep changes scoped and include/update tests under `tests/` when behavior changes.
