@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uav-path-planning-benchmark"
+version = "0.1.0"
+description = "Python port of the UAV path-planning benchmark"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "matplotlib>=3.7",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+uav-benchmark = "uav_benchmark.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["uav_benchmark*"]

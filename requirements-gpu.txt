@@ -1,0 +1,10 @@
+# Optional GPU acceleration backends
+# Install one backend suitable for your platform.
+#
+# NVIDIA CUDA example (adjust CUDA build tag):
+#   pip install cupy-cuda12x
+#
+# PyTorch examples:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121   # CUDA
+#   pip install torch                                                     # Apple Silicon MPS / CPU
+

@@ -1,0 +1,16 @@
+mode: multi
+scenarioSet: paper_medium
+generations: 20
+population: 30
+runs: 2
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [3]
+seed: 11
+gpuMode: auto
+extra:
+  metricInterval: 5
+  nRep: 30
+  mutationProb: 0.15
