@@ -14,10 +14,22 @@ from uav_benchmark.benchmark import run_benchmark, run_nmopso_ablation
 from uav_benchmark.config import BenchmarkParams
 
 
+_BENCHMARK_FLEET_SIZE_DEFAULT = 1
+_BENCHMARK_FLEET_SIZES_DEFAULT = ""
+_BENCHMARK_MULTI_FLEET_SIZE_DEFAULT = 3
+_BENCHMARK_MULTI_FLEET_SIZES_DEFAULT = "3,5,8"
+
+
 def _parse_fleet_sizes(raw: str) -> tuple[int, ...]:
     if not raw:
         return ()
     return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
+
+
+def _fleet_defaults_for_command(command: str) -> tuple[int, str]:
+    if command == "benchmark-multi":
+        return _BENCHMARK_MULTI_FLEET_SIZE_DEFAULT, _BENCHMARK_MULTI_FLEET_SIZES_DEFAULT
+    return _BENCHMARK_FLEET_SIZE_DEFAULT, _BENCHMARK_FLEET_SIZES_DEFAULT
 
 
 def _load_protocol(path: Path) -> dict:
@@ -66,9 +78,10 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
         # Command-line mode override is intentional for aliases like benchmark-multi.
         protocol_params.mode = params.mode
         protocol_params.gpu_mode = params.gpu_mode
-        if params.fleet_sizes:
+        default_fleet_size, default_fleet_sizes_raw = _fleet_defaults_for_command(str(getattr(args, "command", "")))
+        if hasattr(args, "fleet_sizes") and params.fleet_sizes and str(getattr(args, "fleet_sizes", "")) != default_fleet_sizes_raw:
             protocol_params.fleet_sizes = params.fleet_sizes
-        if params.fleet_size > 1:
+        if hasattr(args, "fleet_size") and int(getattr(args, "fleet_size", default_fleet_size)) != default_fleet_size:
             protocol_params.fleet_size = params.fleet_size
         if params.separation_min > 0:
             protocol_params.separation_min = params.separation_min
@@ -98,8 +111,8 @@ def main() -> None:
     benchmark_parser.add_argument("--seed", default=None, type=int)
     benchmark_parser.add_argument("--extra-json", default="", type=str)
     benchmark_parser.add_argument("--mode", choices=("single", "multi"), default="single", type=str)
-    benchmark_parser.add_argument("--fleet-size", default=1, type=int)
-    benchmark_parser.add_argument("--fleet-sizes", default="", type=str, help="Comma-separated fleet sizes, e.g. 3,5,8")
+    benchmark_parser.add_argument("--fleet-size", default=_BENCHMARK_FLEET_SIZE_DEFAULT, type=int)
+    benchmark_parser.add_argument("--fleet-sizes", default=_BENCHMARK_FLEET_SIZES_DEFAULT, type=str, help="Comma-separated fleet sizes, e.g. 3,5,8")
     benchmark_parser.add_argument("--scenario-set", default="paper_medium", type=str)
     benchmark_parser.add_argument("--separation-min", default=10.0, type=float)
     benchmark_parser.add_argument("--max-turn-deg", default=75.0, type=float)
@@ -124,8 +137,8 @@ def main() -> None:
     multi_parser.add_argument("--seed", default=11, type=int)
     multi_parser.add_argument("--extra-json", default="", type=str)
     multi_parser.add_argument("--mode", choices=("single", "multi"), default="multi", type=str)
-    multi_parser.add_argument("--fleet-size", default=3, type=int)
-    multi_parser.add_argument("--fleet-sizes", default="3,5,8", type=str)
+    multi_parser.add_argument("--fleet-size", default=_BENCHMARK_MULTI_FLEET_SIZE_DEFAULT, type=int)
+    multi_parser.add_argument("--fleet-sizes", default=_BENCHMARK_MULTI_FLEET_SIZES_DEFAULT, type=str)
     multi_parser.add_argument("--scenario-set", default="paper_medium", type=str)
     multi_parser.add_argument("--separation-min", default=10.0, type=float)
     multi_parser.add_argument("--max-turn-deg", default=75.0, type=float)
