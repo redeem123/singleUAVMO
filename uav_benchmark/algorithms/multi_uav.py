@@ -173,7 +173,7 @@ def _resume_run_scores(
         data = load_mat(popobj_path)
         matrix_raw = data.get("PopObj")
         if matrix_raw is None:
-            matrix_raw = data.get("final_popobj", np.zeros((0, 0)))
+            return None
         matrix = np.asarray(matrix_raw, dtype=float)
         if matrix.size == 0:
             return None
@@ -184,6 +184,23 @@ def _resume_run_scores(
         return np.zeros(2, dtype=float)
     except Exception:
         return None
+
+
+def _resolve_run_indices(params: BenchmarkParams) -> tuple[int, ...]:
+    raw = params.run_indices
+    if raw is None:
+        return tuple(range(1, int(params.runs) + 1))
+    if isinstance(raw, (list, tuple)):
+        indices = [int(item) for item in raw if int(item) >= 1]
+    else:
+        indices = [int(raw)] if int(raw) >= 1 else []
+    if not indices:
+        return tuple(range(1, int(params.runs) + 1))
+    return tuple(dict.fromkeys(indices))
+
+
+def _should_write_final_hv(params: BenchmarkParams) -> bool:
+    return bool(params.write_final_hv)
 
 
 def _torch_device_peak_bytes(device_tag: str) -> float:
@@ -371,20 +388,18 @@ def _run_multi_pso(
 
     # ── RL controller setup (Layer 2) ─────────────────────────────
     controller: Any = None
+    cfg = parse_rl_config(params.extra, use_rl=True) if use_rl else None
     rl_policy_backend = "none"
-    rl_policy_gpu_peak_bytes = 0.0
-    rl_policy_loss_ema = 0.0
     rl_policy_checkpoint = ""
-    rl_policy_mode = "train"
+    rl_policy_mode = cfg.policy_mode if cfg is not None else "train"
+    rl_policy_online = rl_policy_mode == "online"
+    rl_policy_load = rl_policy_mode in {"warmstart", "freeze"}
+    rl_policy_save = rl_policy_mode in {"train", "warmstart"}
     rl_policy_loaded = False
-    rl_policy_saved = False
-    rl_policy_frozen = False
+    rl_policy_frozen = rl_policy_mode == "freeze"
 
-    if use_rl:
-        cfg = parse_rl_config(params.extra, use_rl=True)
-        rl_policy_mode = cfg.policy_mode
-
-        # Choose controller backend
+    def _build_controller(controller_seed: int) -> tuple[Any, str]:
+        assert cfg is not None
         use_gpu_policy = False
         policy_device = "cpu"
         backend_choice = cfg.controller_backend
@@ -396,11 +411,10 @@ def _run_multi_pso(
                     "cuda:0" if "cuda" in gpu_info.device
                     else ("mps" if "mps" in gpu_info.device else "cpu")
                 )
-
         if use_gpu_policy or backend_choice == "unified":
             try:
                 from uav_benchmark.algorithms.rl_controller import UnifiedController
-                controller = UnifiedController(
+                controller_instance = UnifiedController(
                     device=policy_device,
                     hidden_dim=cfg.hidden_dim,
                     lr=cfg.lr,
@@ -412,41 +426,38 @@ def _run_multi_pso(
                     attention_train_steps=cfg.attention_train_steps,
                     attention_min_train_size=cfg.attention_min_train_size,
                     attention_replay_capacity=cfg.attention_replay_capacity,
-                    seed=seed_value,
+                    seed=controller_seed,
                 )
-                rl_policy_backend = controller.device_tag
+                return controller_instance, controller_instance.device_tag
             except Exception:
                 from uav_benchmark.algorithms.rl_controller import FallbackController
-                controller = FallbackController(warmup_steps=cfg.warmup_steps, seed=seed_value)
-                rl_policy_backend = controller.device_tag
-        else:
-            from uav_benchmark.algorithms.rl_controller import FallbackController
-            controller = FallbackController(warmup_steps=cfg.warmup_steps, seed=seed_value)
-            rl_policy_backend = controller.device_tag
+                controller_instance = FallbackController(warmup_steps=cfg.warmup_steps, seed=controller_seed)
+                return controller_instance, controller_instance.device_tag
+        from uav_benchmark.algorithms.rl_controller import FallbackController
+        controller_instance = FallbackController(warmup_steps=cfg.warmup_steps, seed=controller_seed)
+        return controller_instance, controller_instance.device_tag
 
-        # Checkpoint path
-        checkpoint_raw = cfg.checkpoint_path
-        if checkpoint_raw:
-            rl_policy_checkpoint = str(Path(checkpoint_raw).expanduser().resolve())
-        else:
-            from uav_benchmark.algorithms.rl_controller import UnifiedController as _UC
-            suffix = ".pt" if isinstance(controller, _UC) else ".npz"
-            rl_policy_checkpoint = str(
-                (results_path / "_rl_policy" / f"{params.problem_name}_uav{fleet_size}{suffix}").resolve()
-            )
+    if use_rl and cfg is not None:
+        if not rl_policy_online:
+            controller, rl_policy_backend = _build_controller(seed_value)
 
-        # Load / freeze policy
-        rl_policy_load = rl_policy_mode in {"warmstart", "freeze"}
-        rl_policy_save = rl_policy_mode in {"train", "warmstart"}
-        rl_policy_frozen = rl_policy_mode == "freeze"
+            checkpoint_raw = cfg.checkpoint_path
+            if checkpoint_raw:
+                rl_policy_checkpoint = str(Path(checkpoint_raw).expanduser().resolve())
+            else:
+                from uav_benchmark.algorithms.rl_controller import UnifiedController as _UC
+                suffix = ".pt" if isinstance(controller, _UC) else ".npz"
+                rl_policy_checkpoint = str(
+                    (results_path / "_rl_policy" / f"{params.problem_name}_uav{fleet_size}{suffix}").resolve()
+                )
 
-        if rl_policy_load and rl_policy_checkpoint:
-            try:
-                rl_policy_loaded = bool(controller.load(rl_policy_checkpoint, freeze=rl_policy_frozen))
-            except Exception:
-                rl_policy_loaded = False
-        if rl_policy_frozen:
-            controller.set_frozen(True)
+            if rl_policy_load and rl_policy_checkpoint:
+                try:
+                    rl_policy_loaded = bool(controller.load(rl_policy_checkpoint, freeze=rl_policy_frozen))
+                except Exception:
+                    rl_policy_loaded = False
+            if rl_policy_frozen:
+                controller.set_frozen(True)
 
     # ── PSO hyperparameter defaults ────────────────────────────────
     inertia = float(params.extra.get("w", RLD.DEFAULT_INERTIA if is_nmopso_family else RLD.DEFAULT_INERTIA_MOPSO))
@@ -457,8 +468,24 @@ def _run_multi_pso(
     mutation_prob = float(params.extra.get("mutationProb", RLD.DEFAULT_MUTATION_PROB if is_nmopso_family else RLD.DEFAULT_MUTATION_PROB_MOPSO))
 
     # ── Run loop ──────────────────────────────────────────────────
+    run_indices = _resolve_run_indices(params)
     resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
-    for run_idx in range(1, params.runs + 1):
+    for run_idx in run_indices:
+        run_controller = controller
+        run_rl_policy_backend = rl_policy_backend
+        run_rl_policy_checkpoint = rl_policy_checkpoint
+        run_rl_policy_loaded = rl_policy_loaded
+        run_rl_policy_saved = False
+        run_rl_policy_frozen = rl_policy_frozen
+        run_rl_policy_gpu_peak_bytes = 0.0
+        run_rl_policy_loss_ema = 0.0
+        if use_rl and rl_policy_online and cfg is not None:
+            run_controller, run_rl_policy_backend = _build_controller(seed_value + run_idx)
+            run_rl_policy_checkpoint = ""
+            run_rl_policy_loaded = False
+            run_rl_policy_saved = False
+            run_rl_policy_frozen = False
+
         run_dir = results_path / f"Run_{run_idx}"
         if resume_existing_runs:
             resume_scores = _resume_run_scores(
@@ -476,13 +503,12 @@ def _run_multi_pso(
 
         # RL adapter for this run
         adapter: RLPSOAdapter | None = None
-        if controller is not None:
+        if run_controller is not None and cfg is not None:
             archive_init = engine._finite_archive_matrix()
             diversity_ref = max(float(np.mean(np.std(archive_init, axis=0))) if archive_init.size else 1.0, 1e-9)
 
-            cfg = parse_rl_config(params.extra, use_rl=True)
             adapter = RLPSOAdapter(
-                controller=controller,
+                controller=run_controller,
                 engine=engine,
                 total_generations=params.generations,
                 hv_scale=cfg.reward_hv_scale,
@@ -561,9 +587,9 @@ def _run_multi_pso(
                     diversity_before=diversity_before,
                     diversity_after=result.diversity,
                 )
-                if hasattr(controller, 'loss_ema'):
-                    rl_policy_loss_ema = controller.loss_ema
-                    rl_policy_gpu_peak_bytes = max(rl_policy_gpu_peak_bytes, _torch_device_peak_bytes(controller.device_tag))
+                if hasattr(run_controller, "loss_ema"):
+                    run_rl_policy_loss_ema = run_controller.loss_ema
+                    run_rl_policy_gpu_peak_bytes = max(run_rl_policy_gpu_peak_bytes, _torch_device_peak_bytes(run_controller.device_tag))
 
             if params.compute_metrics:
                 if generation == 1 or generation == params.generations or generation % metric_interval == 0:
@@ -575,12 +601,12 @@ def _run_multi_pso(
         # ── Post-run: save artifacts ──────────────────────────────
         if adapter is not None:
             adapter.flush_pending()
-            if rl_policy_checkpoint and not rl_policy_frozen:
+            if run_rl_policy_checkpoint and not run_rl_policy_frozen and rl_policy_save and run_controller is not None:
                 try:
-                    controller.save(rl_policy_checkpoint)
-                    rl_policy_saved = True
+                    run_controller.save(run_rl_policy_checkpoint)
+                    run_rl_policy_saved = True
                 except Exception:
-                    rl_policy_saved = False
+                    run_rl_policy_saved = False
 
         ensure_dir(run_dir)
         if params.compute_metrics:
@@ -592,10 +618,11 @@ def _run_multi_pso(
         if adapter is not None:
             rl_metadata = adapter.rl_metadata()
             rl_metadata["rlPolicyMode"] = rl_policy_mode
-            rl_metadata["rlPolicyCheckpointPath"] = rl_policy_checkpoint
-            rl_metadata["rlPolicyLoaded"] = float(1.0 if rl_policy_loaded else 0.0)
-            rl_metadata["rlPolicySaved"] = float(1.0 if rl_policy_saved else 0.0)
-            rl_metadata["rlPolicyFrozen"] = float(1.0 if rl_policy_frozen else 0.0)
+            rl_metadata["rlPolicyOnline"] = float(1.0 if rl_policy_online else 0.0)
+            rl_metadata["rlPolicyCheckpointPath"] = run_rl_policy_checkpoint
+            rl_metadata["rlPolicyLoaded"] = float(1.0 if run_rl_policy_loaded else 0.0)
+            rl_metadata["rlPolicySaved"] = float(1.0 if run_rl_policy_saved else 0.0)
+            rl_metadata["rlPolicyFrozen"] = float(1.0 if run_rl_policy_frozen else 0.0)
             rl_metadata["rlRepresentation"] = representation
             rl_metadata["rlAttentionEnabled"] = float(1.0 if cfg.attention_enabled else 0.0)
             rl_metadata["rlAttentionTemperature"] = float(cfg.attention_temperature)
@@ -612,9 +639,9 @@ def _run_multi_pso(
             rl_trace=rl_trace,
             gpu_update_time_sec=engine.gpu_update_time_sec,
             rl_controller_time_sec=adapter.rl_controller_time_sec if adapter else 0.0,
-            rl_policy_backend=rl_policy_backend,
-            rl_policy_gpu_peak_bytes=rl_policy_gpu_peak_bytes,
-            rl_policy_loss_ema=rl_policy_loss_ema,
+            rl_policy_backend=run_rl_policy_backend,
+            rl_policy_gpu_peak_bytes=run_rl_policy_gpu_peak_bytes,
+            rl_policy_loss_ema=run_rl_policy_loss_ema,
             rl_metadata=rl_metadata,
         )
 
@@ -625,7 +652,7 @@ def _run_multi_pso(
                 cal_metric(2, final_matrix, params.problem_index, objective_count),
             ], dtype=float)
 
-    if params.compute_metrics:
+    if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
 
@@ -679,8 +706,9 @@ def _run_multi_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     ensure_dir(results_path)
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
+    run_indices = _resolve_run_indices(params)
     resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
-    for run_idx in range(1, params.runs + 1):
+    for run_idx in run_indices:
         run_dir = results_path / f"Run_{run_idx}"
         if resume_existing_runs:
             resume_scores = _resume_run_scores(
@@ -753,7 +781,7 @@ def _run_multi_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 cal_metric(2, final_obj, params.problem_index, objective_count),
             ], dtype=float)
 
-    if params.compute_metrics:
+    if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
 
@@ -784,8 +812,9 @@ def _run_multi_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     ensure_dir(results_path)
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
+    run_indices = _resolve_run_indices(params)
     resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
-    for run_idx in range(1, params.runs + 1):
+    for run_idx in run_indices:
         run_dir = results_path / f"Run_{run_idx}"
         if resume_existing_runs:
             resume_scores = _resume_run_scores(
@@ -864,7 +893,7 @@ def _run_multi_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 cal_metric(2, final_obj, params.problem_index, objective_count),
             ], dtype=float)
 
-    if params.compute_metrics:
+    if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
 

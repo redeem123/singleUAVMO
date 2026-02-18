@@ -30,6 +30,12 @@ Optional GPU backends:
 python3 -m pip install -r requirements-gpu.txt
 ```
 
+Install dev tooling (lint/test):
+
+```bash
+python3 -m pip install -e ".[dev]"
+```
+
 ## Quickstart
 
 Single-UAV smoke:
@@ -42,6 +48,12 @@ Multi-UAV smoke:
 
 ```bash
 python3 -m uav_benchmark.cli benchmark-multi --project-root . --results-dir results/smoke_multi --protocol configs/smoke_multi.yaml --compute-metrics --gpu-mode auto
+```
+
+Cleanup generated artifacts/caches:
+
+```bash
+python3 scripts/clean_workspace.py --results --caches
 ```
 
 RL-NMOPSO with stronger RL-GPU workload (separate from NMOPSO baseline):
@@ -60,11 +72,25 @@ Policy checkpoint modes (`--extra-json`):
 - `rlPolicyMode: "train"`: train from scratch and save checkpoint.
 - `rlPolicyMode: "warmstart"`: load checkpoint, continue training, then save.
 - `rlPolicyMode: "freeze"`: load checkpoint and run inference-only (no policy updates).
+- `rlPolicyMode: "online"`: train online within each run, no checkpoint load/save (direct baseline-style comparison).
 - `rlPolicyCheckpointPath`: optional explicit checkpoint path; if omitted, a per-problem path is generated.
+
+RL profile presets (`--extra-json`):
+
+- `rlProfile: "lite"`: conservative RL defaults (linucb-first, low auxiliary budget, most auxiliary operators off).
+- `rlProfile: "full"`: balanced default profile for RL-NMOPSO experiments.
+- `rlProfile: "expert"`: same typed config path as `full`, intended for explicit per-component overrides.
+
+Budget-aware RL controls (`--extra-json`):
+
+- `rlAuxEvalBudgetFactor`: per-generation auxiliary evaluation budget as `factor * population` (default `1.0`).
+- `rlRewardCostWeight`: reward penalty weight for auxiliary evaluation usage (default `0.08`).
+- `useFRRMAB`: enable/disable FRRMAB arm scheduler.
 
 Additional run controls (`--extra-json`):
 
 - `resumeExistingRuns: true|false`: skip completed `Run_*` folders and continue interrupted runs.
+- `maxWorkers: N`: cap worker processes (defaults to available CPU count).
 - `problemNames: ["c_100_uav3", ...]`: run only selected problems/scenarios.
 - `rlEliteRefine: true|false` plus:
   - `rlEliteRefineTopK`
@@ -88,11 +114,30 @@ Train/freeze helper scripts:
 python3 scripts/run_paper_full_trainfreeze.py
 python3 scripts/run_paper_first_problem_trainfreeze.py
 python3 scripts/run_paper_first_problem_trainfreeze_refine.py
+python3 scripts/run_rl_component_ablation.py --quick
+python3 scripts/run_publication_suite.py \
+  --results-root results/publication_suite \
+  --attention-results-dir results/publication_suite/attention_ablation_strict \
+  --benchmark-results-dir results/three_scenarios_30runs \
+  --run-attention \
+  --no-run-benchmark \
+  --strict-audit
 ```
 
 - `run_paper_full_trainfreeze.py`: full multi-scenario baseline + RL warmstart + RL freeze pipeline.
 - `run_paper_first_problem_trainfreeze.py`: first-problem (`c_100_uav3`) benchmark with train/freeze protocol.
 - `run_paper_first_problem_trainfreeze_refine.py`: first-problem train/freeze with RL elite-refinement enabled.
+- `run_rl_component_ablation.py`: RL profile/component ablation matrix with per-case metric reports and aggregate CSV.
+- `run_attention_ablation.py`: strict attention ablation matrix with run-manifest and quality gates.
+- `publication_readiness_audit.py`: mandatory publication-gate audit over ablation + benchmark artifacts.
+- `export_publication_tables.py`: export paper-ready tables in CSV/Markdown/LaTeX.
+- `run_publication_suite.py`: end-to-end publication bundle orchestration (run/audit/tables/package).
+
+Publication docs:
+
+- `docs/rl_ablation_protocol.md`
+- `docs/publication_pipeline.md`
+- `docs/reproducibility.md`
 
 ## Core CLI Commands
 
@@ -110,7 +155,8 @@ python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 - `uav_benchmark/`: Core Python package (algorithms, evaluators, analysis, CLI).
 - `problems/`: Terrain/problem definitions (`terrainStruct_*.mat`).
 - `configs/`: Benchmark protocol YAMLs (e.g., smoke and paper settings).
-- `scripts/`: Helper scripts for running benchmark workflows.
+- `scripts/`: Active helper scripts for benchmark/publication workflows.
+- `scripts/legacy/`: Legacy migration/parity wrappers preserved for traceability.
 - `tests/`: Unit and smoke tests.
 - `docs/`: Protocol/reproducibility notes and reference papers.
 - `matlabimplementation/`: Original MATLAB-side implementation assets.
@@ -140,6 +186,10 @@ Metrics reports are written to `results/.../metrics/`:
 - `pairwise_stats.csv`
 - `win_tie_loss.csv`
 - `benchmark_metrics_summary.json`
+
+Benchmark-level reproducibility manifest:
+
+- `results/<run_dir>/benchmark_manifest.json` (resolved problem/algorithm plan, per-task effective seeds, git/env metadata, plan hash)
 
 ## Notes
 
