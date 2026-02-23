@@ -777,7 +777,7 @@ def _run_multi_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
             obj = _candidate_matrix(candidates)
             front_no, _ = n_d_sort(obj.copy(), None, params.population)
             crowd = crowding_distance(obj, front_no)
-            mating = tournament_selection(params.population, front_no, -crowd, k_tournament=2)
+            mating = tournament_selection(2, params.population, front_no, -crowd)
             offspring = _sbx_mutation(population[mating], lower, upper)
             off_candidates = _evaluate_population(offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
 
@@ -883,7 +883,7 @@ def _run_multi_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
         for generation in range(1, params.generations + 1):
             constraints = np.zeros(population_size, dtype=float)
-            mating = tournament_selection(population_size, constraints, k_tournament=2)
+            mating = tournament_selection(2, population_size, constraints)
             offspring = _sbx_mutation(population[mating], lower, upper)
             off_candidates = _evaluate_population(offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
 
