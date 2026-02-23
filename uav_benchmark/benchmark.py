@@ -25,6 +25,9 @@ from uav_benchmark.algorithms import (
     run_nsga3,
     run_rl_nmopso,
     run_multi_moqgwo,
+    run_multi_moqgwo_no_attention,
+    run_multi_moqgwo_no_atlas,
+    run_multi_moqgwo_standard_gwo,
     run_multi_apex_shade,
 )
 from uav_benchmark.config import BenchmarkParams
@@ -48,6 +51,9 @@ _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "MO-MFEA-II": run_momfea2,
     "CTM-EA": run_ctmea,
     "MOQGWO": run_multi_moqgwo,
+    "MOQGWO-NO-ATTENTION": run_multi_moqgwo_no_attention,
+    "MOQGWO-NO-ATLAS": run_multi_moqgwo_no_atlas,
+    "MOQGWO-STANDARD-GWO": run_multi_moqgwo_standard_gwo,
     "APEX-SHADE": run_multi_apex_shade,
 }
 
@@ -61,6 +67,9 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "MO-MFEA-II": 67,
     "CTM-EA": 79,
     "MOQGWO": 83,
+    "MOQGWO-NO-ATTENTION": 89,
+    "MOQGWO-NO-ATLAS": 101,
+    "MOQGWO-STANDARD-GWO": 103,
     "APEX-SHADE": 97,
 }
 
@@ -262,6 +271,31 @@ def _normalize_algorithm_name(name: str) -> str:
         return "CTM-EA"
     if key in {"moqgwo", "a2moqgwo", "a2-moqgwo"}:
         return "MOQGWO"
+    if key in {
+        "moqgwo-no-attention",
+        "moqgwo_no_attention",
+        "a2moqgwo-no-attention",
+        "a2moqgwo_no_attention",
+        "a2-moqgwo-no-attention",
+        "a2moqgwo-noattention",
+    }:
+        return "MOQGWO-NO-ATTENTION"
+    if key in {
+        "moqgwo-no-atlas",
+        "moqgwo_no_atlas",
+        "a2moqgwo-no-atlas",
+        "a2moqgwo_no_atlas",
+        "a2-moqgwo-no-atlas",
+    }:
+        return "MOQGWO-NO-ATLAS"
+    if key in {
+        "moqgwo-standard-gwo",
+        "moqgwo_standard_gwo",
+        "a2moqgwo-standard-gwo",
+        "a2moqgwo_standard_gwo",
+        "a2-moqgwo-standard-gwo",
+    }:
+        return "MOQGWO-STANDARD-GWO"
     if key in {"apex-shade", "apexshade", "apex_shade"}:
         return "APEX-SHADE"
     return str(name).strip()
@@ -317,6 +351,9 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
         "MO-MFEA-II",
         "CTM-EA",
         "MOQGWO",
+        "MOQGWO-NO-ATTENTION",
+        "MOQGWO-NO-ATLAS",
+        "MOQGWO-STANDARD-GWO",
         "APEX-SHADE",
     ]
     mapping = [(name, _RUNNER_BY_NAME[name]) for name in _known_order if name in _RUNNER_BY_NAME]

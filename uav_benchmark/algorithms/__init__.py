@@ -5,7 +5,12 @@ from uav_benchmark.algorithms.nmopso import run_nmopso
 from uav_benchmark.algorithms.rl_nmopso import run_rl_nmopso
 from uav_benchmark.algorithms.nsga2 import run_nsga2
 from uav_benchmark.algorithms.nsga3 import run_nsga3
-from uav_benchmark.algorithms.moqgwo import run_multi_moqgwo
+from uav_benchmark.algorithms.moqgwo import (
+    run_multi_moqgwo,
+    run_multi_moqgwo_no_attention,
+    run_multi_moqgwo_no_atlas,
+    run_multi_moqgwo_standard_gwo,
+)
 from uav_benchmark.algorithms.apex_shade import run_multi_apex_shade
 
 __all__ = [
@@ -18,5 +23,8 @@ __all__ = [
     "run_nsga2",
     "run_nsga3",
     "run_multi_moqgwo",
+    "run_multi_moqgwo_no_attention",
+    "run_multi_moqgwo_no_atlas",
+    "run_multi_moqgwo_standard_gwo",
     "run_multi_apex_shade",
 ]

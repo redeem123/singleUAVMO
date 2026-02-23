@@ -11,6 +11,7 @@ Fixed version addressing:
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import time
 from typing import Any
 
@@ -52,11 +53,20 @@ from uav_benchmark.algorithms.nmopso_utils import (
 class QGWO_Engine:
     """Quantum Grey Wolf Optimizer Core with fixed attention and quantum step."""
 
-    def __init__(self, lower: np.ndarray, upper: np.ndarray, pop_size: int) -> None:
+    def __init__(
+        self,
+        lower: np.ndarray,
+        upper: np.ndarray,
+        pop_size: int,
+        use_attention: bool = True,
+        use_quantum: bool = True,
+    ) -> None:
         self.lower    = lower
         self.upper    = upper
         self.dim      = lower.size
         self.pop_size = pop_size
+        self.use_attention = bool(use_attention)
+        self.use_quantum = bool(use_quantum)
         self.positions = np.random.uniform(lower, upper, size=(pop_size, self.dim))
         self.leaders   = np.zeros((3, self.dim))
         self._chaos_x  = 0.5
@@ -102,9 +112,14 @@ class QGWO_Engine:
         chaos_val = self._zaslavskii_map()
         a = 2.0 - generation * (2.0 / max_generations) + 0.1 * chaos_val
 
-        # Attention-guided collapse centre — vectorised across population
-        m_best = np.stack([self._self_attention(self.positions[i], self.leaders)
-                           for i in range(self.pop_size)])
+        if self.use_attention:
+            # Attention-guided collapse centre — vectorised across population
+            m_best = np.stack([self._self_attention(self.positions[i], self.leaders)
+                               for i in range(self.pop_size)])
+        else:
+            # Ablation: QGWO without attention, use simple mean leader centroid.
+            mean_leader = np.mean(self.leaders, axis=0)
+            m_best = np.repeat(mean_leader[None, :], self.pop_size, axis=0)
 
         # Quantum beta parameter
         beta = np.random.uniform(0.5, 1.0, size=(self.pop_size, self.dim))
@@ -126,10 +141,14 @@ class QGWO_Engine:
         sign = np.where(np.random.rand(self.pop_size, self.dim) > 0.5, 1.0, -1.0)
         q_pos = m_best + sign * beta * np.abs(m_best - self.positions) * log_term
 
-        # Blend: early → more quantum exploration; late → more GWO exploitation
-        blend_chance = (max_generations - generation) / max_generations
-        mask = np.random.rand(self.pop_size, self.dim) < blend_chance
-        new_positions = np.where(mask, q_pos, X_GWO)
+        if self.use_quantum:
+            # Blend: early -> more quantum exploration; late -> more GWO exploitation
+            blend_chance = (max_generations - generation) / max_generations
+            mask = np.random.rand(self.pop_size, self.dim) < blend_chance
+            new_positions = np.where(mask, q_pos, X_GWO)
+        else:
+            # Ablation: standard GWO core only (same wrapper/constraints/archive).
+            new_positions = X_GWO
 
         # Sanitize and clip
         finite_mask = np.isfinite(new_positions)
@@ -171,25 +190,26 @@ def _build_grid(
 def _update_archive(
     archive: list[Candidate],
     new_cands: list[Candidate],
-    atlas_indices: np.ndarray,    # pre-computed for all (archive + new)
+    atlas_indices: np.ndarray | None,    # pre-computed for all (archive + new)
     max_size: int,
     divisions: int,
     atlas_config: AtlasConfig,
     model: dict,
-) -> tuple[list[Candidate], np.ndarray]:
+) -> tuple[list[Candidate], np.ndarray | None]:
     """Merge + prune archive using CDP + non-dominated sorting + Atlas truncation.
 
     Returns (kept_candidates, kept_atlas_indices).
     """
     all_cands = list(archive) + list(new_cands)
     if not all_cands:
-        return [], np.zeros(0, dtype=int)
+        return [], (np.zeros(0, dtype=int) if atlas_indices is not None else None)
 
-    n_arch     = len(archive)
     total      = len(all_cands)
     obj_all    = np.stack([c.objective for c in all_cands])
     cv_all     = _constraint_violation_vector(all_cands, model)
-    atlas_all  = atlas_indices  # shape (total,), pre-built by caller
+    atlas_all: np.ndarray | None = None
+    if atlas_indices is not None and atlas_indices.size == total:
+        atlas_all = atlas_indices
 
     # ── Phase 1: Feasibility filter ─────────────────────────────────
     feas_mask  = cv_all <= 0.0
@@ -199,12 +219,12 @@ def _update_archive(
         # No feasible solutions — keep least-violating (CDP)
         order = np.argsort(cv_all)[:max_size]
         kept  = [all_cands[i] for i in order]
-        return kept, atlas_all[order]
+        kept_atlas = atlas_all[order] if atlas_all is not None else None
+        return kept, kept_atlas
 
     # Work on feasible pool only
     feas_idx  = np.where(feas_mask)[0]
     feas_obj  = obj_all[feas_idx]
-    feas_atl  = atlas_all[feas_idx]
 
     # ── Phase 2: Non-dominated sorting (front 1 only) ───────────────
     fronts, _ = n_d_sort(feas_obj.copy(), None, feas_idx.size)
@@ -214,29 +234,31 @@ def _update_archive(
 
     if front1.size <= max_size:
         kept = [all_cands[i] for i in front1]
-        return kept, atlas_all[front1]
+        kept_atlas = atlas_all[front1] if atlas_all is not None else None
+        return kept, kept_atlas
 
     # ── Phase 3: Atlas Truncation (oversize front 1) ─────────────────
     f1_obj  = obj_all[front1]
-    f1_atl  = atlas_all[front1]
+    f1_atl  = atlas_all[front1] if atlas_all is not None else None
     grid, _, _ = _build_grid(f1_obj, divisions)
 
     delete_mask = np.zeros(front1.size, dtype=bool)
     while int((~delete_mask).sum()) > max_size:
         active     = np.where(~delete_mask)[0]
         active_grid = grid[active]
-        active_atl  = f1_atl[active]
+        active_atl  = f1_atl[active] if f1_atl is not None else None
         kill_local  = delete_one_with_weights(
             active_grid, 10.0,
             atlas_config.objective_weight,
             atlas_config.atlas_weight,
-            active_atl,
+            active_atl if atlas_config.enabled else None,
         )
         delete_mask[active[kill_local]] = True
 
     keep_local = np.where(~delete_mask)[0]
     keep_global = front1[keep_local]
-    return [all_cands[i] for i in keep_global], atlas_all[keep_global]
+    kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
+    return [all_cands[i] for i in keep_global], kept_atlas
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -269,7 +291,7 @@ def _atlas_for_candidates(
 
 def _select_leaders(
     archive: list[Candidate],
-    atlas_indices: np.ndarray,
+    atlas_indices: np.ndarray | None,
     divisions: int,
     atlas_config: AtlasConfig,
     model: dict,
@@ -293,7 +315,7 @@ def _select_leaders(
         pool_idx  = np.arange(n)  # fall back to all
 
     pool_obj  = np.stack([archive[i].objective for i in pool_idx])
-    pool_atl  = atlas_indices[pool_idx]
+    pool_atl  = atlas_indices[pool_idx] if atlas_indices is not None else None
     grid, _, _ = _build_grid(pool_obj, divisions)
 
     leaders = []
@@ -302,7 +324,7 @@ def _select_leaders(
             grid, 10.0,
             atlas_config.objective_weight,
             atlas_config.atlas_weight,
-            pool_atl,
+            pool_atl if atlas_config.enabled else None,
         )
         leaders.append(archive[pool_idx[idx_in_pool]].vector.copy())
 
@@ -312,6 +334,26 @@ def _select_leaders(
 # ─────────────────────────────────────────────────────────────────────
 # Main Runner
 # ─────────────────────────────────────────────────────────────────────
+
+def _resolve_variant(raw: Any) -> str:
+    key = str(raw).strip().lower()
+    if key in {"", "full", "a2", "a2moqgwo", "a2-moqgwo"}:
+        return "full"
+    if key in {"no_attention", "no-attention", "noattention"}:
+        return "no_attention"
+    if key in {"standard_gwo", "standard-gwo", "gwo", "standard"}:
+        return "standard_gwo"
+    return "full"
+
+
+def _apply_variant(params: BenchmarkParams, *, variant: str | None = None, use_atlas: bool | None = None) -> BenchmarkParams:
+    merged_extra = dict(params.extra) if isinstance(params.extra, dict) else {}
+    if variant is not None:
+        merged_extra["moqgwoVariant"] = variant
+    if use_atlas is not None:
+        merged_extra["moqgwoUseAtlas"] = bool(use_atlas)
+    return replace(params, extra=merged_extra)
+
 
 def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     """A²-MOQGWO: Fixed, constraint-aware, topology-robust multi-UAV runner."""
@@ -333,6 +375,10 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model["hardCollisionConstraint"] = True
 
     lower, upper = _build_bounds(model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+    variant = _resolve_variant(params.extra.get("moqgwoVariant", "full"))
+    use_atlas = bool(params.extra.get("moqgwoUseAtlas", True))
+    use_attention = variant != "no_attention"
+    use_quantum = variant != "standard_gwo"
 
     archive_size   = int(params.extra.get("nRep", params.population))
     grid_divisions = int(params.extra.get("nGrid", 10))
@@ -343,7 +389,18 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     run_scores = (np.zeros((params.runs, 2), dtype=float)
                   if params.compute_metrics else np.zeros((0, 2), dtype=float))
 
-    atlas_config    = build_atlas_config({"useTopologyRobustArchive": True})
+    atlas_config = build_atlas_config({
+        "useTopologyRobustArchive": use_atlas,
+        "atlasTopologyBins": int(params.extra.get("atlasTopologyBins", 24)),
+        "atlasRobustBins": int(params.extra.get("atlasRobustBins", 4)),
+        "atlasMaxObstacles": int(params.extra.get("atlasMaxObstacles", 3)),
+        "atlasHashLevels": int(params.extra.get("atlasHashLevels", 6)),
+        "atlasObjectiveWeight": float(params.extra.get("atlasObjectiveWeight", 0.5)),
+        "atlasTopologyWeight": float(params.extra.get("atlasTopologyWeight", 0.5)),
+    })
+    if not atlas_config.enabled:
+        atlas_config.objective_weight = 1.0
+        atlas_config.atlas_weight = 0.0
     run_indices     = _resolve_run_indices(params)
     resume_existing = bool(params.extra.get("resumeExistingRuns", True))
 
@@ -365,7 +422,13 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         np.random.seed(seed_value * 1000 + run_idx)
 
         # ── Initialise ────────────────────────────────────────────────
-        engine = QGWO_Engine(lower, upper, params.population)
+        engine = QGWO_Engine(
+            lower,
+            upper,
+            params.population,
+            use_attention=use_attention,
+            use_quantum=use_quantum,
+        )
         hv_hist = (np.zeros((params.generations, 2), dtype=float)
                    if params.compute_metrics else np.zeros((0, 2), dtype=float))
 
@@ -373,10 +436,10 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         init_cands  = _evaluate_population(
             engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
         )
-        init_atlas  = _atlas_for_candidates(init_cands, model, atlas_config)
+        init_atlas = _atlas_for_candidates(init_cands, model, atlas_config) if atlas_config.enabled else None
 
         archive: list[Candidate] = []
-        arc_atlas: np.ndarray    = np.zeros(0, dtype=int)
+        arc_atlas: np.ndarray | None = np.zeros(0, dtype=int) if atlas_config.enabled else None
 
         # Bootstrap archive
         archive, arc_atlas = _update_archive(
@@ -398,11 +461,13 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
             new_cands = _evaluate_population(
                 new_positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
             )
-            new_atlas = _atlas_for_candidates(new_cands, model, atlas_config)
+            new_atlas = _atlas_for_candidates(new_cands, model, atlas_config) if atlas_config.enabled else None
 
             # Archive update (CDP-aware)
             # FIX #5: Combine archive+new atlas arrays for the update call
-            combined_atlas = np.concatenate([arc_atlas, new_atlas])
+            combined_atlas = None
+            if arc_atlas is not None and new_atlas is not None:
+                combined_atlas = np.concatenate([arc_atlas, new_atlas])
             archive, arc_atlas = _update_archive(
                 archive, new_cands, combined_atlas,
                 archive_size, grid_divisions, atlas_config, model,
@@ -449,6 +514,8 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
             run_metadata={
                 "algorithmName": "MOQGWO",
                 "representation": "cart",
+                "moqgwoVariant": str(variant),
+                "moqgwoUseAtlas": float(1.0 if atlas_config.enabled else 0.0),
                 "requestedPopulation": float(params.population),
                 "effectivePopulation": float(params.population),
                 "archiveSize": float(archive_size),
@@ -465,3 +532,15 @@ def run_multi_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
+
+
+def run_multi_moqgwo_no_attention(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+    return run_multi_moqgwo(model, _apply_variant(params, variant="no_attention"))
+
+
+def run_multi_moqgwo_no_atlas(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+    return run_multi_moqgwo(model, _apply_variant(params, use_atlas=False))
+
+
+def run_multi_moqgwo_standard_gwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+    return run_multi_moqgwo(model, _apply_variant(params, variant="standard_gwo"))
