@@ -475,8 +475,23 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         )
         all_problem_files = sorted(problems_dir.glob("*.mat"))
 
-    suffixes = tuple(f"_uav{int(size)}" for size in fleet_sizes)
-    problem_files = [path for path in all_problem_files if any(path.stem.endswith(suffix) for suffix in suffixes)]
+    requested_fleets = set(int(size) for size in fleet_sizes)
+    explicit_uav1_bases = {
+        _base_problem_name(_problem_name(path))
+        for path in all_problem_files
+        if _fleet_from_problem_name(_problem_name(path)) == 1
+    }
+    problem_files: list[Path] = []
+    for path in all_problem_files:
+        problem_name = _problem_name(path)
+        fleet = _fleet_from_problem_name(problem_name)
+        if fleet is None:
+            # Base scenario files (without _uav suffix) represent single-UAV cases.
+            if 1 in requested_fleets and _base_problem_name(problem_name) not in explicit_uav1_bases:
+                problem_files.append(path)
+            continue
+        if fleet in requested_fleets:
+            problem_files.append(path)
     if not problem_files:
         problem_files = [path for path in all_problem_files if "_uav" in path.stem]
     requested_problem_names = _requested_problem_names(params.extra)
