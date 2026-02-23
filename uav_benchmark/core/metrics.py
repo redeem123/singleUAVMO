@@ -4,6 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+HV_REF_MARGIN = 1.1
+HV_DEFAULT_SAMPLES = 10_000
+
 
 def _head(matrix: np.ndarray) -> np.ndarray:
     return matrix[0] if matrix.shape[0] > 0 else np.array([])
@@ -62,7 +65,12 @@ def _slice(points: np.ndarray, objective_index: int, ref_point: np.ndarray) -> l
     return slices
 
 
-def hypervolume(pop_obj: np.ndarray, max_pop_obj: np.ndarray, sample_num: int | None = None) -> float:
+def hypervolume(
+    pop_obj: np.ndarray,
+    max_pop_obj: np.ndarray,
+    sample_num: int | None = None,
+    rng: np.random.Generator | None = None,
+) -> float:
     pop_obj = np.asarray(pop_obj, dtype=float)
     if pop_obj.size == 0:
         return 0.0
@@ -71,7 +79,7 @@ def hypervolume(pop_obj: np.ndarray, max_pop_obj: np.ndarray, sample_num: int | 
 
     min_values = np.minimum(np.min(pop_obj, axis=0), np.zeros(n_objectives))
     max_values = np.maximum(max_pop_obj, np.zeros(n_objectives))
-    denominator = (max_values - min_values) * 1.1
+    denominator = (max_values - min_values) * HV_REF_MARGIN
     denominator[denominator == 0] = 1.0
     normalized = (pop_obj - min_values) / denominator
     normalized = normalized[~np.any(normalized > 1.0, axis=1)]
@@ -79,7 +87,7 @@ def hypervolume(pop_obj: np.ndarray, max_pop_obj: np.ndarray, sample_num: int | 
     if normalized.size == 0:
         return 0.0
     if sample_num is None or sample_num <= 0:
-        sample_num = 10_000
+        sample_num = HV_DEFAULT_SAMPLES
 
     if n_objectives < 4:
         sorted_points = normalized[np.lexsort(np.flipud(normalized.T))]
@@ -98,7 +106,8 @@ def hypervolume(pop_obj: np.ndarray, max_pop_obj: np.ndarray, sample_num: int | 
 
     minimum = np.min(normalized, axis=0)
     maximum = reference
-    samples = np.random.uniform(minimum, maximum, size=(sample_num, n_objectives))
+    generator = rng if rng is not None else np.random.default_rng()
+    samples = generator.uniform(minimum, maximum, size=(sample_num, n_objectives))
     for candidate in normalized:
         dominated = np.all(candidate <= samples, axis=1)
         samples = samples[~dominated]
@@ -166,6 +175,7 @@ def cal_metric(
     objective_count: int,
     hv_samples: int | None = None,
     ref_point: np.ndarray | None = None,
+    rng: np.random.Generator | None = None,
 ) -> float:
     del problem_index
     pop_obj = np.asarray(pop_obj, dtype=float)
@@ -177,9 +187,9 @@ def cal_metric(
             return 0.0
         if ref_point is None:
             max_values = np.max(finite, axis=0)
-            ref_point = max_values * 1.1
+            ref_point = max_values * HV_REF_MARGIN
             ref_point[ref_point <= 0] = 1.0
-        return hypervolume(finite, ref_point, hv_samples)
+        return hypervolume(finite, ref_point, hv_samples, rng=rng)
     if pop_obj.shape[1] != objective_count and pop_obj.shape[0] == objective_count:
         pop_obj = pop_obj.T
     # Filter inf rows before the expensive O(n^3) pure_diversity call

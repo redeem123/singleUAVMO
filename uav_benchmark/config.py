@@ -27,6 +27,8 @@ class BenchmarkParams:
     evaluation_budget: int = 0
     scenario_set: str = "paper_medium"
     gpu_mode: str = "auto"
+    run_indices: tuple[int, ...] | None = None
+    write_final_hv: bool = True
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -60,5 +62,19 @@ class BenchmarkParams:
         params.evaluation_budget = int(mapping.get("evaluationBudget", mapping.get("evaluation_budget", params.evaluation_budget)))
         params.scenario_set = str(mapping.get("scenarioSet", mapping.get("scenario_set", params.scenario_set)))
         params.gpu_mode = str(mapping.get("gpuMode", mapping.get("gpu_mode", params.gpu_mode)))
+        if "runIndices" in mapping or "run_indices" in mapping:
+            raw_indices = mapping.get("runIndices", mapping.get("run_indices"))
+            if raw_indices is None:
+                params.run_indices = None
+            elif isinstance(raw_indices, str):
+                parsed = [int(item.strip()) for item in raw_indices.split(",") if item.strip()]
+                params.run_indices = tuple(parsed) if parsed else None
+            elif isinstance(raw_indices, (list, tuple)):
+                parsed = [int(item) for item in raw_indices]
+                params.run_indices = tuple(parsed) if parsed else None
+            else:
+                parsed = int(raw_indices)
+                params.run_indices = (parsed,) if parsed >= 1 else None
+        params.write_final_hv = bool(mapping.get("writeFinalHv", mapping.get("write_final_hv", params.write_final_hv)))
         params.extra = dict(mapping)
         return params

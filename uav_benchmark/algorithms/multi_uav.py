@@ -160,6 +160,51 @@ def _evaluate_population(
     return candidates
 
 
+def _constraint_violation(candidate: Candidate, model: dict[str, Any]) -> float:
+    details = candidate.details if isinstance(candidate.details, dict) else {}
+    objective = np.asarray(candidate.objective, dtype=float).reshape(-1)
+    violation = 0.0
+
+    if objective.size == 0 or np.any(~np.isfinite(objective)):
+        non_finite = float(np.sum(~np.isfinite(objective))) if objective.size > 0 else 1.0
+        violation += 10.0 * max(1.0, non_finite)
+
+    separation_min = float(model.get("separationMin", model.get("safeDist", 10.0)))
+    max_turn_deg = float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0)))
+    drone_size = float(model.get("droneSize", 1.0))
+
+    if float(details.get("separationViolation", 0.0)) > 0.5:
+        min_sep = float(details.get("minSeparation", np.nan))
+        if np.isfinite(min_sep):
+            violation += max(0.0, (separation_min - min_sep) / max(separation_min, 1e-9))
+        else:
+            violation += 1.0
+
+    if float(details.get("turnViolation", 0.0)) > 0.5:
+        observed_turn = float(details.get("maxTurnDeg", np.nan))
+        if np.isfinite(observed_turn):
+            violation += max(0.0, (observed_turn - max_turn_deg) / max(max_turn_deg, 1e-9))
+        else:
+            violation += 1.0
+
+    if float(details.get("collisionViolation", 0.0)) > 0.5:
+        min_clearance = float(details.get("minClearance", np.nan))
+        if np.isfinite(min_clearance):
+            violation += max(0.0, (drone_size - min_clearance) / max(drone_size, 1e-9))
+        else:
+            violation += 1.0
+
+    if float(details.get("feasible", 1.0)) <= 0.5 and violation <= 0.0:
+        violation = 1.0
+    return float(max(0.0, violation))
+
+
+def _constraint_violation_vector(candidates: list[Candidate], model: dict[str, Any]) -> np.ndarray:
+    if not candidates:
+        return np.zeros(0, dtype=float)
+    return np.asarray([_constraint_violation(candidate, model) for candidate in candidates], dtype=float)
+
+
 def _resume_run_scores(
     run_dir: Path,
     problem_index: int,
@@ -236,6 +281,7 @@ def _save_multi_artifacts(
     rl_policy_gpu_peak_bytes: float = 0.0,
     rl_policy_loss_ema: float = 0.0,
     rl_metadata: dict[str, Any] | None = None,
+    run_metadata: dict[str, Any] | None = None,
 ) -> None:
     from uav_benchmark.algorithms.nmopso_engine import _candidate_matrix
     ensure_dir(run_dir)
@@ -255,6 +301,9 @@ def _save_multi_artifacts(
         "rlPolicyGpuPeakBytes": float(rl_policy_gpu_peak_bytes),
         "rlPolicyLossEma": float(rl_policy_loss_ema),
     }
+    if run_metadata:
+        for key, value in run_metadata.items():
+            run_stats[str(key)] = value
     save_mat(run_dir / "run_stats.mat", run_stats)
 
     # RL trace

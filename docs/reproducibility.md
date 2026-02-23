@@ -47,3 +47,26 @@ python3 -m uav_benchmark.cli benchmark-multi \
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
+
+## MOQGWO Next Phase Helpers
+
+Template protocol and plan:
+
+- `configs/moqgwo_component_ablation.yaml`
+- `docs/moqgwo_publication_plan.md`
+
+Significance analysis (Wilcoxon/rank-sum + Holm + Cliff + Friedman):
+
+```bash
+python3 scripts/analyze_benchmark_significance.py \
+  --results-dir results/full_benchmark_20260222 \
+  --control-algorithm MOQGWO \
+  --pairwise-mode auto
+```
+
+Runtime complexity breakdown:
+
+```bash
+python3 scripts/analyze_runtime_breakdown.py \
+  --results-dir results/full_benchmark_20260222
+```

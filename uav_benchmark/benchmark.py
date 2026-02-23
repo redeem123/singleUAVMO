@@ -24,6 +24,8 @@ from uav_benchmark.algorithms import (
     run_nsga2,
     run_nsga3,
     run_rl_nmopso,
+    run_multi_moqgwo,
+    run_multi_apex_shade,
 )
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
@@ -45,6 +47,8 @@ _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "MO-MFEA": run_momfea,
     "MO-MFEA-II": run_momfea2,
     "CTM-EA": run_ctmea,
+    "MOQGWO": run_multi_moqgwo,
+    "APEX-SHADE": run_multi_apex_shade,
 }
 
 _ALGORITHM_SEED_OFFSET: dict[str, int] = {
@@ -56,6 +60,8 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "MO-MFEA": 53,
     "MO-MFEA-II": 67,
     "CTM-EA": 79,
+    "MOQGWO": 83,
+    "APEX-SHADE": 97,
 }
 
 def _seed_for_task(base_seed: int, problem_index: int, algorithm_name: str) -> int:
@@ -254,6 +260,10 @@ def _normalize_algorithm_name(name: str) -> str:
         return "MO-MFEA-II"
     if key in {"ctm-ea", "ctmea"}:
         return "CTM-EA"
+    if key in {"moqgwo", "a2moqgwo", "a2-moqgwo"}:
+        return "MOQGWO"
+    if key in {"apex-shade", "apexshade", "apex_shade"}:
+        return "APEX-SHADE"
     return str(name).strip()
 
 
@@ -297,13 +307,21 @@ def _problem_name(problem_file: Path) -> str:
 
 
 def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, AlgorithmRunner]]:
-    mapping = [
-        ("RL-NMOPSO", run_rl_nmopso),
-        ("NMOPSO", run_nmopso),
-        ("MOPSO", run_mopso),
-        ("NSGA-II", run_nsga2),
-        ("NSGA-III", run_nsga3),
+    _known_order = [
+        "RL-NMOPSO",
+        "NMOPSO",
+        "MOPSO",
+        "NSGA-II",
+        "NSGA-III",
+        "MO-MFEA",
+        "MO-MFEA-II",
+        "CTM-EA",
+        "MOQGWO",
+        "APEX-SHADE",
     ]
+    mapping = [(name, _RUNNER_BY_NAME[name]) for name in _known_order if name in _RUNNER_BY_NAME]
+    extra = [(name, runner) for name, runner in _RUNNER_BY_NAME.items() if name not in _known_order]
+    mapping.extend(sorted(extra, key=lambda item: item[0]))
     if not include_algorithms:
         return mapping
     include_set = set(include_algorithms)
