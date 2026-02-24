@@ -108,6 +108,8 @@ class SHADEMemory:
 
     def sample(self, size: int) -> tuple[np.ndarray, np.ndarray]:
         """Sample F ~ Cauchy(M_F, 0.1) clipped to (0,1], CR ~ N(M_CR, 0.1) clipped to [0,1]."""
+        self.M_F = np.nan_to_num(self.M_F, nan=0.5, posinf=1.0, neginf=0.1)
+        self.M_CR = np.nan_to_num(self.M_CR, nan=0.5, posinf=1.0, neginf=0.0)
         r = np.random.randint(0, self.H, size=size)
         # Vectorised Cauchy sampling — retry negatives component-wise
         F = np.zeros(size)
@@ -119,6 +121,8 @@ class SHADEMemory:
                 trials += 1
             F[i] = min(max(fi, 1e-4), 1.0)
         CR = np.clip(np.random.normal(self.M_CR[r], 0.1), 0.0, 1.0)
+        F = np.nan_to_num(F, nan=0.5, posinf=1.0, neginf=1e-4)
+        CR = np.nan_to_num(CR, nan=0.5, posinf=1.0, neginf=0.0)
         return F, CR
 
     def update(self, S_F: list[float], S_CR: list[float],
@@ -129,9 +133,20 @@ class SHADEMemory:
         Fa  = np.array(S_F,     dtype=float)
         CRa = np.array(S_CR,    dtype=float)
         da  = np.array(S_delta, dtype=float)
-        w   = da / (da.sum() + 1e-12)
+        valid = np.isfinite(Fa) & np.isfinite(CRa) & np.isfinite(da) & (da > 0.0)
+        if not np.any(valid):
+            return
+        Fa = Fa[valid]
+        CRa = CRa[valid]
+        da = da[valid]
+        total = float(da.sum())
+        if not np.isfinite(total) or total <= 0.0:
+            return
+        w   = da / (total + 1e-12)
         self.M_F[self._k]  = float((w * Fa**2).sum() / ((w * Fa).sum() + 1e-12))
         self.M_CR[self._k] = float((w * CRa).sum())
+        self.M_F[self._k] = float(np.clip(np.nan_to_num(self.M_F[self._k], nan=0.5, posinf=1.0, neginf=1e-4), 1e-4, 1.0))
+        self.M_CR[self._k] = float(np.clip(np.nan_to_num(self.M_CR[self._k], nan=0.5, posinf=1.0, neginf=0.0), 0.0, 1.0))
         self._k = (self._k + 1) % self.H
 
 
@@ -454,7 +469,8 @@ def run_multi_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
                     new_cv[i]    = float(trial_cv[i])
                     new_cands[i] = trial_cands[i]
                     # Record success
-                    improvement = float(np.sum(np.maximum(0.0, obj[i] - trial_obj[i])))
+                    diff = np.nan_to_num(obj[i] - trial_obj[i], nan=0.0, posinf=0.0, neginf=0.0)
+                    improvement = float(np.sum(np.maximum(0.0, diff)))
                     S_F.append(float(F[i]))
                     S_CR.append(float(CR[i]))
                     S_delta.append(improvement + 1e-12)

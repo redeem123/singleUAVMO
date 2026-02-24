@@ -22,6 +22,10 @@ def decode_decision(
 
 
 def _ground_height(height_map: np.ndarray, x: float, y: float, xmax: int, ymax: int) -> float:
+    if not np.isfinite(x):
+        x = 0.5 * (1.0 + float(xmax))
+    if not np.isfinite(y):
+        y = 0.5 * (1.0 + float(ymax))
     xi = int(np.clip(round(x), 1, xmax)) - 1
     yi = int(np.clip(round(y), 1, ymax)) - 1
     return float(height_map[yi, xi])
@@ -29,9 +33,21 @@ def _ground_height(height_map: np.ndarray, x: float, y: float, xmax: int, ymax: 
 
 def _to_abs_point(model: dict[str, Any], point_xy_relz: np.ndarray, safe_h: float | None) -> np.ndarray:
     x, y, z_rel = float(point_xy_relz[0]), float(point_xy_relz[1]), float(point_xy_relz[2])
-    x = float(np.clip(x, float(model["xmin"]), float(model["xmax"])))
-    y = float(np.clip(y, float(model["ymin"]), float(model["ymax"])))
-    z_rel = float(np.clip(z_rel, float(model["zmin"]), float(model["zmax"])))
+    xmin = float(model["xmin"])
+    xmax = float(model["xmax"])
+    ymin = float(model["ymin"])
+    ymax = float(model["ymax"])
+    zmin = float(model["zmin"])
+    zmax = float(model["zmax"])
+    if not np.isfinite(x):
+        x = 0.5 * (xmin + xmax)
+    if not np.isfinite(y):
+        y = 0.5 * (ymin + ymax)
+    if not np.isfinite(z_rel):
+        z_rel = float(safe_h) if safe_h is not None else zmin
+    x = float(np.clip(x, xmin, xmax))
+    y = float(np.clip(y, ymin, ymax))
+    z_rel = float(np.clip(z_rel, zmin, zmax))
     if safe_h is not None:
         z_rel = max(z_rel, safe_h)
     ground = _ground_height(
@@ -59,6 +75,7 @@ def _progress_schedule(progress_raw: np.ndarray, n_waypoints: int) -> np.ndarray
     centered = centered[:n_waypoints]
     if centered.size < n_waypoints:
         centered = np.pad(centered, (0, n_waypoints - centered.size), mode="edge")
+    centered = np.nan_to_num(centered, nan=0.0, posinf=0.0, neginf=0.0)
     centered = centered - np.mean(centered)
     max_abs = float(np.max(np.abs(centered))) if centered.size > 0 else 0.0
     if max_abs > 1e-12:
