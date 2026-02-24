@@ -90,11 +90,32 @@ def r2_contribution(pop_obj: np.ndarray, index: int,
 
 def _all_r2_contributions(pop_obj: np.ndarray, weights: np.ndarray,
                           z_ideal: np.ndarray) -> np.ndarray:
-    """Compute R2 contribution for every member.  O(N²·W)."""
-    n = pop_obj.shape[0]
+    """Compute R2 contribution for every member in a vectorized form.
+
+    Uses Tchebycheff minima structure:
+    for each weight vector, only the current best solution can change the
+    unary R2 value when removed. Complexity is O(N*W).
+    """
+    n = int(pop_obj.shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    if n == 1:
+        return np.array([float("inf")], dtype=float)
+
+    shifted = pop_obj - z_ideal
+    tcheby = np.max(
+        weights[np.newaxis, :, :] * np.abs(shifted[:, np.newaxis, :]),
+        axis=2,
+    )  # (N, W)
+
+    best_idx = np.argmin(tcheby, axis=0)  # (W,)
+    cols = np.arange(tcheby.shape[1])
+    best_val = tcheby[best_idx, cols]
+    second_val = np.partition(tcheby, 1, axis=0)[1]
+
     contribs = np.zeros(n, dtype=float)
-    for i in range(n):
-        contribs[i] = r2_contribution(pop_obj, i, weights, z_ideal)
+    np.add.at(contribs, best_idx, second_val - best_val)
+    contribs /= float(tcheby.shape[1])
     return contribs
 
 
@@ -180,10 +201,13 @@ def r2_archive_update(
     feas_vec = feas_vec[keep]
 
     # --- Prune to max_size using R2 contribution ---
-    while feas_obj.shape[0] > max_size:
+    if feas_obj.shape[0] > max_size:
+        # One-shot truncation keeps highest-contribution members.
+        # This avoids cubic-time iterative deletion on large pools.
         contribs = _all_r2_contributions(feas_obj, weights, z_ideal)
-        worst = int(np.argmin(contribs))
-        feas_obj = np.delete(feas_obj, worst, axis=0)
-        feas_vec = np.delete(feas_vec, worst, axis=0)
+        order = np.argsort(-contribs)
+        keep_idx = np.sort(order[:max_size])
+        feas_obj = feas_obj[keep_idx]
+        feas_vec = feas_vec[keep_idx]
 
     return feas_obj, feas_vec, z_ideal
