@@ -26,6 +26,7 @@ from uav_benchmark.algorithms import (
     run_moead,
     run_spea2,
     run_mfo_spea2,
+    run_gcnmoea,
     run_cmosma,
     run_multi_moqgwo,
     run_multi_moqgwo_no_attention,
@@ -54,6 +55,7 @@ _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "MOEAD": run_moead,
     "SPEA2": run_spea2,
     "MFO-SPEA2": run_mfo_spea2,
+    "GCNMOEA": run_gcnmoea,
     "CMOSMA": run_cmosma,
     "MO-MFEA": run_momfea,
     "MO-MFEA-II": run_momfea2,
@@ -74,6 +76,7 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "MOEAD": 43,
     "SPEA2": 47,
     "MFO-SPEA2": 61,
+    "GCNMOEA": 71,
     "CMOSMA": 59,
     "MO-MFEA": 53,
     "MO-MFEA-II": 67,
@@ -275,6 +278,8 @@ def _normalize_algorithm_name(name: str) -> str:
         return "SPEA2"
     if key in {"mfo-spea2", "mfospea2", "mfo_spea2", "mfo-spea-2"}:
         return "MFO-SPEA2"
+    if key in {"gcnmoea", "gcn-moea", "gcn_moea"}:
+        return "GCNMOEA"
     if key in {"cmosma", "cmo-sma", "cmo_sma"}:
         return "CMOSMA"
     if key in {"mo-mfea", "momfea"}:
@@ -371,6 +376,7 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
         "MOEAD",
         "SPEA2",
         "MFO-SPEA2",
+        "GCNMOEA",
         "CMOSMA",
         "MO-MFEA",
         "MO-MFEA-II",

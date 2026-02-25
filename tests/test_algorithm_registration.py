@@ -30,6 +30,18 @@ class AlgorithmRegistrationTest(unittest.TestCase):
         only = [name for name, _runner in _algorithm_map(("MFO-SPEA2",))]
         self.assertEqual(only, ["MFO-SPEA2"])
 
+    def test_gcnmoea_name_normalization(self) -> None:
+        self.assertEqual(_normalize_algorithm_name("gcnmoea"), "GCNMOEA")
+        self.assertEqual(_normalize_algorithm_name("GCN-MOEA"), "GCNMOEA")
+        self.assertEqual(_normalize_algorithm_name("gcn_moea"), "GCNMOEA")
+
+    def test_gcnmoea_registered_in_algorithm_map(self) -> None:
+        names = [name for name, _runner in _algorithm_map()]
+        self.assertIn("GCNMOEA", names)
+
+        only = [name for name, _runner in _algorithm_map(("GCNMOEA",))]
+        self.assertEqual(only, ["GCNMOEA"])
+
 
 if __name__ == "__main__":
     unittest.main()

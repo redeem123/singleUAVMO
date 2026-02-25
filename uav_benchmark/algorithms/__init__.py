@@ -7,6 +7,7 @@ from uav_benchmark.algorithms.nsga3 import run_nsga3
 from uav_benchmark.algorithms.moead import run_moead
 from uav_benchmark.algorithms.spea2 import run_spea2
 from uav_benchmark.algorithms.mfo_spea2 import run_mfo_spea2
+from uav_benchmark.algorithms.gcnmoea import run_gcnmoea
 from uav_benchmark.algorithms.cmosma import run_cmosma
 from uav_benchmark.algorithms.moqgwo import (
     run_multi_moqgwo,
@@ -28,6 +29,7 @@ __all__ = [
     "run_moead",
     "run_spea2",
     "run_mfo_spea2",
+    "run_gcnmoea",
     "run_cmosma",
     "run_multi_moqgwo",
     "run_multi_moqgwo_no_attention",
