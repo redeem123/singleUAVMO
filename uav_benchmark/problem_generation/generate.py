@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from uav_benchmark.io.matlab import load_terrain_struct, save_mat
-from uav_benchmark.problem_generation.multi_uav_assignments import sample_homogeneous_assignments
+from uav_benchmark.problem_generation.fleet_assignments import sample_homogeneous_assignments
 
 
 @dataclass(slots=True)
@@ -213,7 +213,7 @@ def save_mountain(path: Path, with_nofly: bool = False, seed: int | None = None)
     _save(path, generate_mountain(TerrainSpec(seed=seed), with_nofly=with_nofly))
 
 
-def make_multi_uav_terrain(
+def make_fleet_terrain(
     terrain: dict,
     fleet_size: int,
     seed: int,
@@ -236,7 +236,7 @@ def make_multi_uav_terrain(
     return output
 
 
-def save_multi_uav_scenarios(
+def save_fleet_scenarios(
     project_root: Path,
     base_problem_names: list[str],
     fleet_sizes: tuple[int, ...],
@@ -255,7 +255,7 @@ def save_multi_uav_scenarios(
         for fleet_size in fleet_sizes:
             if fleet_size <= 1:
                 continue
-            multi = make_multi_uav_terrain(
+            mission = make_fleet_terrain(
                 terrain=terrain,
                 fleet_size=fleet_size,
                 seed=seed + int(fleet_size),
@@ -263,6 +263,6 @@ def save_multi_uav_scenarios(
                 mission_prefix=mission_prefix,
             )
             out_file = problems_dir / f"terrainStruct_{base_name}_uav{fleet_size}.mat"
-            save_mat(out_file, {"terrainStruct": multi})
+            save_mat(out_file, {"terrainStruct": mission})
             output_paths.append(out_file)
     return output_paths

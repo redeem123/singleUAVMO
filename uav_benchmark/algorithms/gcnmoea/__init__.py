@@ -16,19 +16,19 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.algorithms.multi_uav import (
+from uav_benchmark.algorithms.shared.fleet_runner import (
     _build_bounds,
     _constraint_violation_vector,
-    _ensure_multi_endpoints,
+    _ensure_fleet_endpoints,
     _evaluate_population,
     _resolve_run_indices,
     _resume_run_scores,
-    _save_multi_artifacts,
+    _save_fleet_artifacts,
     _sbx_mutation,
     _should_write_final_hv,
 )
-from uav_benchmark.algorithms.nmopso_engine import _candidate_matrix
-from uav_benchmark.algorithms.pso_types import Candidate
+from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort, tournament_selection
@@ -540,13 +540,13 @@ def _replacement_mask(
     return ((g_old >= g_new) & (((cv_old <= epsilon_k) & (cv_new <= epsilon_k)) | np.isclose(cv_old, cv_new))) | (cv_new < cv_old)
 
 
-def _run_multi_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+def _run_fleet_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     objective_count = 4
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
     seed_value = int(params.seed) if params.seed is not None else 0
-    model, fleet_size = _ensure_multi_endpoints(
+    model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
         seed=seed_value + requested_fleet,
@@ -773,7 +773,7 @@ def _run_multi_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.nda
         ensure_dir(run_dir)
         if params.compute_metrics:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
-        _save_multi_artifacts(
+        _save_fleet_artifacts(
             run_dir=run_dir,
             final_candidates=candidates,
             problem_index=params.problem_index,
@@ -799,10 +799,11 @@ def _run_multi_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.nda
 
 
 def run_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    if str(params.mode).lower() == "multi":
-        return _run_multi_gcnmoea(model, params)
-    # Single-UAV fallback keeps benchmark compatibility for GCNMOEA names
-    # in single mode; a dedicated single-UAV implementation can be added later.
+    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
+    if (not use_legacy_runner) or int(params.fleet_size) > 1:
+        return _run_fleet_gcnmoea(model, params)
+    # Legacy-path fallback keeps benchmark compatibility for GCNMOEA names;
+    # a dedicated path-native implementation can be added later.
     from uav_benchmark.algorithms.nsga2 import run_nsga2
 
     return run_nsga2(model, params)

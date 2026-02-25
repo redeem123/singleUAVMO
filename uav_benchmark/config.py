@@ -19,7 +19,7 @@ class BenchmarkParams:
     problem_index: int = 0
     seed: int | None = None
     algorithm: str = ""
-    mode: str = "single"
+    mode: str = "fleet"
     fleet_size: int = 1
     fleet_sizes: tuple[int, ...] = ()
     separation_min: float = 10.0
@@ -47,7 +47,11 @@ class BenchmarkParams:
         params.problem_index = int(mapping.get("problemIndex", mapping.get("problem_index", params.problem_index)))
         if "seed" in mapping and mapping["seed"] is not None:
             params.seed = int(mapping["seed"])
-        params.mode = str(mapping.get("mode", params.mode))
+        raw_mode = str(mapping.get("mode", params.mode)).strip().lower()
+        if raw_mode in {"fleet"}:
+            params.mode = "fleet"
+        else:
+            params.mode = raw_mode if raw_mode else params.mode
         params.fleet_size = int(mapping.get("fleetSize", mapping.get("fleet_size", params.fleet_size)))
         if "fleetSizes" in mapping or "fleet_sizes" in mapping:
             raw = mapping.get("fleetSizes", mapping.get("fleet_sizes", ()))

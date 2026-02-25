@@ -254,6 +254,8 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
             max_turn_deg = float(np.degrees(max_turn))
 
     objective = np.array([first_objective, second_objective, third_objective, fourth_objective], dtype=float)
+    if np.all(np.isfinite(objective)):
+        objective = np.clip(objective, 0.0, 1.0)
     details = {
         "collisionViolation": collision_violation,
         "minClearance": float(min_clearance_global),

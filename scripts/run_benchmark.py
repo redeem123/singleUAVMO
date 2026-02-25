@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from uav_benchmark.analysis.generate_research_plots import generate_research_plots
+from uav_benchmark.analysis.plotting.research import generate_research_plots
 from uav_benchmark.benchmark import run_benchmark
 from uav_benchmark.config import BenchmarkParams
 

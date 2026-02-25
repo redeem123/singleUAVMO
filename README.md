@@ -1,21 +1,20 @@
-# Python UAV Benchmark (Single + Multi-UAV)
+# Python UAV Benchmark (Fleet-First)
 
 ## Brief Project Overview
 
-This repository provides a reproducible benchmark framework for constrained UAV path planning and mission optimization. It supports both single-UAV and multi-UAV experiments, compares multiple evolutionary baselines, and includes an RL-enhanced NMOPSO variant for learning-guided search.
+This repository provides a reproducible benchmark framework for constrained UAV path planning and mission optimization. It uses one fleet-based architecture and compares multiple evolutionary baselines.
 
 Current scope includes:
 
-- single-UAV workflows (backward compatible),
-- multi-UAV mission benchmarking (homogeneous point-to-point),
-- RL-enhanced NMOPSO (`RL-NMOPSO`) in multi-UAV mode,
+- base-fleet workflows (`fleet_size=1`),
+- fleet mission benchmarking (homogeneous point-to-point),
 - optional GPU acceleration (`--gpu-mode auto|off|force`).
 
 ## Project Goals
 
 - Provide a reproducible benchmark framework for constrained UAV path planning.
-- Preserve single-UAV compatibility while extending to multi-UAV mission-level optimization.
-- Offer baseline evolutionary methods and RL-enhanced variants for comparative studies.
+- Keep one consistent mission-level optimization pipeline for every fleet size.
+- Offer baseline evolutionary methods for comparative studies.
 - Generate paper-ready metrics and artifacts from scripted runs.
 
 ## Setup / Run Instructions
@@ -38,16 +37,16 @@ python3 -m pip install -e ".[dev]"
 
 ## Quickstart
 
-Single-UAV smoke:
+Base-fleet smoke (`fleet_size=1`):
 
 ```bash
-python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_single --generations 5 --population 20 --runs 1 --mode single --compute-metrics
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet1 --generations 5 --population 20 --runs 1 --fleet-size 1 --compute-metrics
 ```
 
-Multi-UAV smoke:
+Fleet smoke:
 
 ```bash
-python3 -m uav_benchmark.cli benchmark-multi --project-root . --results-dir results/smoke_multi --protocol configs/smoke_multi.yaml --compute-metrics --gpu-mode auto
+python3 -m uav_benchmark.cli benchmark-fleet --project-root . --results-dir results/smoke_fleet --protocol configs/smoke_fleet.yaml --compute-metrics --gpu-mode auto
 ```
 
 Cleanup generated artifacts/caches:
@@ -56,78 +55,29 @@ Cleanup generated artifacts/caches:
 python3 scripts/clean_workspace.py --results --caches
 ```
 
-RL-NMOPSO with stronger RL-GPU workload (separate from NMOPSO baseline):
-
-```bash
-python3 -m uav_benchmark.cli benchmark-multi \
-  --project-root . \
-  --results-dir results/rl_gpu \
-  --generations 300 --population 80 --runs 10 \
-  --gpu-mode auto \
-  --extra-json '{"rlUseGpuPolicy":true,"rlControllerBackend":"auto","rlGpuHiddenDim":384,"rlGpuBatchSize":2048,"rlGpuTrainSteps":16,"rlGpuMinTrainSize":128,"rlGpuReplayCapacity":65536,"rlRewardNStep":5,"rlRewardGamma":0.9,"rlPhaseGating":true}'
-```
-
-Policy checkpoint modes (`--extra-json`):
-
-- `rlPolicyMode: "train"`: train from scratch and save checkpoint.
-- `rlPolicyMode: "warmstart"`: load checkpoint, continue training, then save.
-- `rlPolicyMode: "freeze"`: load checkpoint and run inference-only (no policy updates).
-- `rlPolicyMode: "online"`: train online within each run, no checkpoint load/save (direct baseline-style comparison).
-- `rlPolicyCheckpointPath`: optional explicit checkpoint path; if omitted, a per-problem path is generated.
-
-RL profile presets (`--extra-json`):
-
-- `rlProfile: "lite"`: conservative RL defaults (linucb-first, low auxiliary budget, most auxiliary operators off).
-- `rlProfile: "full"`: balanced default profile for RL-NMOPSO experiments.
-- `rlProfile: "expert"`: same typed config path as `full`, intended for explicit per-component overrides.
-
-Budget-aware RL controls (`--extra-json`):
-
-- `rlAuxEvalBudgetFactor`: per-generation auxiliary evaluation budget as `factor * population` (default `1.0`).
-- `rlRewardCostWeight`: reward penalty weight for auxiliary evaluation usage (default `0.08`).
-- `useFRRMAB`: enable/disable FRRMAB arm scheduler.
-
 Additional run controls (`--extra-json`):
 
 - `resumeExistingRuns: true|false`: skip completed `Run_*` folders and continue interrupted runs.
 - `maxWorkers: N`: cap worker processes (defaults to available CPU count).
 - `problemNames: ["c_100_uav3", ...]`: run only selected problems/scenarios.
-- `rlEliteRefine: true|false` plus:
-  - `rlEliteRefineTopK`
-  - `rlEliteRefineIters`
-  - `rlEliteRefineSigmaStart`
-  - `rlEliteRefineSigmaEnd`
 
-## Multi-UAV Paper Pipeline
+## Fleet Paper Pipeline
 
 Run the paper artifact pipeline:
 
 ```bash
-python3 -m uav_benchmark.cli paper-artifacts --project-root . --results-dir results/paper_artifacts --protocol configs/paper_medium_multi.yaml --gpu-mode auto
+python3 -m uav_benchmark.cli paper-artifacts --project-root . --results-dir results/paper_artifacts --protocol configs/paper_medium_fleet.yaml --gpu-mode auto
 ```
 
-This runs benchmark + report + stats + multi-UAV plots.
+This runs benchmark + report + stats + fleet plots.
 
-Train/freeze helper scripts:
+Helper scripts:
 
 ```bash
-python3 scripts/run_paper_full_trainfreeze.py
-python3 scripts/run_paper_first_problem_trainfreeze.py
-python3 scripts/run_paper_first_problem_trainfreeze_refine.py
-python3 scripts/run_rl_component_ablation.py --quick
-python3 scripts/run_publication_suite.py \
-  --results-root results/publication_suite \
-  --attention-results-dir results/publication_suite/attention_ablation_strict \
-  --benchmark-results-dir results/three_scenarios_30runs \
-  --run-attention \
-  --no-run-benchmark \
-  --strict-audit
+python3 scripts/run_moqgwo_component_ablation.py
+python3 scripts/run_benchmark_fleet.py
 ```
 
-- `run_paper_full_trainfreeze.py`: full multi-scenario baseline + RL warmstart + RL freeze pipeline.
-- `run_paper_first_problem_trainfreeze.py`: first-problem (`c_100_uav3`) benchmark with train/freeze protocol.
-- `run_paper_first_problem_trainfreeze_refine.py`: first-problem train/freeze with RL elite-refinement enabled.
-- `run_rl_component_ablation.py`: RL profile/component ablation matrix with per-case metric reports and aggregate CSV.
 - `run_attention_ablation.py`: strict attention ablation matrix with run-manifest and quality gates.
 - `publication_readiness_audit.py`: mandatory publication-gate audit over ablation + benchmark artifacts.
 - `export_publication_tables.py`: export paper-ready tables in CSV/Markdown/LaTeX.
@@ -135,7 +85,6 @@ python3 scripts/run_publication_suite.py \
 
 Publication docs:
 
-- `docs/rl_ablation_protocol.md`
 - `docs/publication_pipeline.md`
 - `docs/reproducibility.md`
 
@@ -159,14 +108,14 @@ python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 - `scripts/legacy/`: Legacy migration/parity wrappers preserved for traceability.
 - `tests/`: Unit and smoke tests.
 - `docs/`: Protocol/reproducibility notes and reference papers.
-- `uav_benchmark/analysis/matlab/`: MATLAB plotting drivers invoked from Python CLI.
+- `uav_benchmark/analysis/generate_research_plots.py`: Python launcher that runs embedded MATLAB plotting driver.
 - `results/`: Generated benchmark outputs (ignored in Git for large artifacts).
 - `requirements-python.txt`, `requirements-gpu.txt`: CPU/GPU dependency sets.
 - `pyproject.toml`: Python project metadata.
 
-## Multi-UAV Result Artifacts
+## Fleet Result Artifacts
 
-Each multi-UAV run (`Run_*`) stores:
+Each run (`Run_*`) stores:
 
 - `final_popobj.mat`
 - `run_stats.mat`
@@ -175,10 +124,9 @@ Each multi-UAV run (`Run_*`) stores:
 - `conflict_log.mat`
 - `bp_*.mat` (compatibility path exports)
 
-`run_stats.mat` now includes GPU/RL split telemetry:
+`run_stats.mat` includes runtime and GPU telemetry:
 
 - `gpuBackend`, `gpuMemPeakBytes`, `gpuUpdateTimeSec`
-- `rlPolicyBackend`, `rlPolicyGpuMemPeakBytes`, `rlControllerTimeSec`, `rlPolicyLossEma`
 
 Metrics reports are written to `results/.../metrics/`:
 

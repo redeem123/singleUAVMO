@@ -3,10 +3,10 @@ from uav_benchmark.problem_generation.generate import (
     generate_city,
     generate_mountain,
     generate_suburban,
-    make_multi_uav_terrain,
+    make_fleet_terrain,
     save_city,
     save_mountain,
-    save_multi_uav_scenarios,
+    save_fleet_scenarios,
     save_suburban,
 )
 
@@ -15,9 +15,9 @@ __all__ = [
     "generate_city",
     "generate_mountain",
     "generate_suburban",
-    "make_multi_uav_terrain",
+    "make_fleet_terrain",
     "save_city",
     "save_mountain",
-    "save_multi_uav_scenarios",
+    "save_fleet_scenarios",
     "save_suburban",
 ]

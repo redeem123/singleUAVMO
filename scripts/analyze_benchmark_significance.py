@@ -14,14 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from uav_benchmark.analysis.benchmark_report import (  # noqa: E402
+from uav_benchmark.analysis.metrics.report import (  # noqa: E402
     _igd_plus,
     _load_feasible_mask,
     _load_mission_metric,
     _load_popobj_raw,
     _load_runtime,
 )
-from uav_benchmark.analysis.compute_metrics import _build_ref_points  # noqa: E402
+from uav_benchmark.analysis.metrics.compute import _build_ref_points  # noqa: E402
 from uav_benchmark.core.metrics import cal_metric  # noqa: E402
 
 try:

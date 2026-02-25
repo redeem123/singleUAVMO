@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uav_benchmark.analysis.compute_metrics import _load_feasible_mask
+from uav_benchmark.analysis.metrics.compute import _load_feasible_mask
 from uav_benchmark.io.matlab import save_mat
 
 

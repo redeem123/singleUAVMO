@@ -28,18 +28,18 @@ from uav_benchmark.algorithms import (
     run_mfo_spea2,
     run_gcnmoea,
     run_cmosma,
-    run_multi_moqgwo,
-    run_multi_moqgwo_no_attention,
-    run_multi_moqgwo_no_atlas,
-    run_multi_moqgwo_standard_gwo,
-    run_multi_apex_shade,
+    run_fleet_moqgwo,
+    run_fleet_moqgwo_no_attention,
+    run_fleet_moqgwo_no_atlas,
+    run_fleet_moqgwo_standard_gwo,
+    run_fleet_apex_shade,
     run_tskac_nsga2,
 )
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import load_mat, load_terrain_struct, save_mat
 from uav_benchmark.io.results import ensure_dir
-from uav_benchmark.problem_generation.generate import save_multi_uav_scenarios
+from uav_benchmark.problem_generation.generate import save_fleet_scenarios
 from uav_benchmark.utils.random import seed_everything
 
 AlgorithmRunner = Callable[[dict, BenchmarkParams], Any]
@@ -59,11 +59,11 @@ _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "CMOSMA": run_cmosma,
     "MO-MFEA": run_momfea,
     "MO-MFEA-II": run_momfea2,
-    "MOQGWO": run_multi_moqgwo,
-    "MOQGWO-NO-ATTENTION": run_multi_moqgwo_no_attention,
-    "MOQGWO-NO-ATLAS": run_multi_moqgwo_no_atlas,
-    "MOQGWO-STANDARD-GWO": run_multi_moqgwo_standard_gwo,
-    "APEX-SHADE": run_multi_apex_shade,
+    "MOQGWO": run_fleet_moqgwo,
+    "MOQGWO-NO-ATTENTION": run_fleet_moqgwo_no_attention,
+    "MOQGWO-NO-ATLAS": run_fleet_moqgwo_no_atlas,
+    "MOQGWO-STANDARD-GWO": run_fleet_moqgwo_standard_gwo,
+    "APEX-SHADE": run_fleet_apex_shade,
     "TSKAC-NSGA-II": run_tskac_nsga2,
 }
 
@@ -496,7 +496,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         "s_80_40_nofly",
     ]
     if params.scenario_set == "paper_medium":
-        save_multi_uav_scenarios(
+        save_fleet_scenarios(
             project_root=project_root,
             base_problem_names=base_names,
             fleet_sizes=tuple(int(size) for size in fleet_sizes),
@@ -517,7 +517,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         problem_name = _problem_name(path)
         fleet = _fleet_from_problem_name(problem_name)
         if fleet is None:
-            # Base scenario files (without _uav suffix) represent single-UAV cases.
+            # Base scenario files (without _uav suffix) represent legacy-path cases.
             if 1 in requested_fleets and _base_problem_name(problem_name) not in explicit_uav1_bases:
                 problem_files.append(path)
             continue

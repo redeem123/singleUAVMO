@@ -18,7 +18,7 @@ python3 -m pip install -r requirements-gpu.txt
 python3 -m uav_benchmark.cli paper-artifacts \
   --project-root . \
   --results-dir results/paper_artifacts \
-  --protocol configs/paper_medium_multi.yaml \
+  --protocol configs/paper_medium_fleet.yaml \
   --gpu-mode auto
 ```
 
@@ -29,15 +29,15 @@ python3 -m uav_benchmark.cli paper-artifacts \
 - `results/paper_artifacts/metrics/pairwise_stats.csv`
 - `results/paper_artifacts/metrics/win_tie_loss.csv`
 - `results/paper_artifacts/metrics/benchmark_metrics_summary.json`
-- `results/paper_artifacts/plots_multi_uav/*.png`
+- `results/paper_artifacts/plots_fleet_uav/*.fig`
 
 ## Smoke Validation
 
 ```bash
-python3 -m uav_benchmark.cli benchmark-multi \
+python3 -m uav_benchmark.cli benchmark-fleet \
   --project-root . \
-  --results-dir results/smoke_multi \
-  --protocol configs/smoke_multi.yaml \
+  --results-dir results/smoke_fleet \
+  --protocol configs/smoke_fleet.yaml \
   --compute-metrics \
   --gpu-mode off
 ```

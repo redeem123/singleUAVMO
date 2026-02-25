@@ -15,8 +15,8 @@ from uav_benchmark.config import BenchmarkParams
 
 _BENCHMARK_FLEET_SIZE_DEFAULT = 1
 _BENCHMARK_FLEET_SIZES_DEFAULT = ""
-_BENCHMARK_MULTI_FLEET_SIZE_DEFAULT = 3
-_BENCHMARK_MULTI_FLEET_SIZES_DEFAULT = "3,5,8"
+_BENCHMARK_FLEET_PRESET_SIZE_DEFAULT = 3
+_BENCHMARK_FLEET_PRESET_SIZES_DEFAULT = "3,5,8"
 
 
 def _parse_fleet_sizes(raw: str) -> tuple[int, ...]:
@@ -26,8 +26,8 @@ def _parse_fleet_sizes(raw: str) -> tuple[int, ...]:
 
 
 def _fleet_defaults_for_command(command: str) -> tuple[int, str]:
-    if command == "benchmark-multi":
-        return _BENCHMARK_MULTI_FLEET_SIZE_DEFAULT, _BENCHMARK_MULTI_FLEET_SIZES_DEFAULT
+    if command == "benchmark-fleet":
+        return _BENCHMARK_FLEET_PRESET_SIZE_DEFAULT, _BENCHMARK_FLEET_PRESET_SIZES_DEFAULT
     return _BENCHMARK_FLEET_SIZE_DEFAULT, _BENCHMARK_FLEET_SIZES_DEFAULT
 
 
@@ -59,7 +59,7 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
         drone_size=args.drone_size,
         results_dir=Path(args.results_dir),
         seed=args.seed,
-        mode=args.mode if hasattr(args, "mode") else "single",
+        mode="fleet",
         fleet_size=args.fleet_size if hasattr(args, "fleet_size") else 1,
         fleet_sizes=_parse_fleet_sizes(args.fleet_sizes) if hasattr(args, "fleet_sizes") else (),
         separation_min=args.separation_min if hasattr(args, "separation_min") else 10.0,
@@ -74,7 +74,7 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
         protocol_params = BenchmarkParams.from_mapping(protocol_mapping)
         protocol_params.results_dir = Path(args.results_dir).resolve()
         protocol_params.extra.update(extra)
-        # Command-line mode override is intentional for aliases like benchmark-multi.
+        # Command-line mode override is intentional for aliases like benchmark-fleet.
         protocol_params.mode = params.mode
         protocol_params.gpu_mode = params.gpu_mode
         default_fleet_size, default_fleet_sizes_raw = _fleet_defaults_for_command(str(getattr(args, "command", "")))
@@ -109,7 +109,6 @@ def main() -> None:
     benchmark_parser.add_argument("--drone-size", default=1.0, type=float)
     benchmark_parser.add_argument("--seed", default=None, type=int)
     benchmark_parser.add_argument("--extra-json", default="", type=str)
-    benchmark_parser.add_argument("--mode", choices=("single", "multi"), default="single", type=str)
     benchmark_parser.add_argument("--fleet-size", default=_BENCHMARK_FLEET_SIZE_DEFAULT, type=int)
     benchmark_parser.add_argument("--fleet-sizes", default=_BENCHMARK_FLEET_SIZES_DEFAULT, type=str, help="Comma-separated fleet sizes, e.g. 3,5,8")
     benchmark_parser.add_argument("--scenario-set", default="paper_medium", type=str)
@@ -124,27 +123,26 @@ def main() -> None:
         help="Generate research plots automatically after benchmark completes",
     )
 
-    multi_parser = subparsers.add_parser("benchmark-multi")
-    multi_parser.add_argument("--project-root", default=".", type=str)
-    multi_parser.add_argument("--results-dir", default="results", type=str)
-    multi_parser.add_argument("--generations", default=300, type=int)
-    multi_parser.add_argument("--population", default=80, type=int)
-    multi_parser.add_argument("--runs", default=10, type=int)
-    multi_parser.add_argument("--compute-metrics", action="store_true")
-    multi_parser.add_argument("--safe-dist", default=20.0, type=float)
-    multi_parser.add_argument("--drone-size", default=1.0, type=float)
-    multi_parser.add_argument("--seed", default=11, type=int)
-    multi_parser.add_argument("--extra-json", default="", type=str)
-    multi_parser.add_argument("--mode", choices=("single", "multi"), default="multi", type=str)
-    multi_parser.add_argument("--fleet-size", default=_BENCHMARK_MULTI_FLEET_SIZE_DEFAULT, type=int)
-    multi_parser.add_argument("--fleet-sizes", default=_BENCHMARK_MULTI_FLEET_SIZES_DEFAULT, type=str)
-    multi_parser.add_argument("--scenario-set", default="paper_medium", type=str)
-    multi_parser.add_argument("--separation-min", default=10.0, type=float)
-    multi_parser.add_argument("--max-turn-deg", default=75.0, type=float)
-    multi_parser.add_argument("--evaluation-budget", default=0, type=int)
-    multi_parser.add_argument("--gpu-mode", choices=("auto", "off", "force"), default="auto", type=str)
-    multi_parser.add_argument("--protocol", default="", type=str)
-    multi_parser.add_argument("--plots-after", action="store_true")
+    fleet_parser = subparsers.add_parser("benchmark-fleet")
+    fleet_parser.add_argument("--project-root", default=".", type=str)
+    fleet_parser.add_argument("--results-dir", default="results", type=str)
+    fleet_parser.add_argument("--generations", default=300, type=int)
+    fleet_parser.add_argument("--population", default=80, type=int)
+    fleet_parser.add_argument("--runs", default=10, type=int)
+    fleet_parser.add_argument("--compute-metrics", action="store_true")
+    fleet_parser.add_argument("--safe-dist", default=20.0, type=float)
+    fleet_parser.add_argument("--drone-size", default=1.0, type=float)
+    fleet_parser.add_argument("--seed", default=11, type=int)
+    fleet_parser.add_argument("--extra-json", default="", type=str)
+    fleet_parser.add_argument("--fleet-size", default=_BENCHMARK_FLEET_PRESET_SIZE_DEFAULT, type=int)
+    fleet_parser.add_argument("--fleet-sizes", default=_BENCHMARK_FLEET_PRESET_SIZES_DEFAULT, type=str)
+    fleet_parser.add_argument("--scenario-set", default="paper_medium", type=str)
+    fleet_parser.add_argument("--separation-min", default=10.0, type=float)
+    fleet_parser.add_argument("--max-turn-deg", default=75.0, type=float)
+    fleet_parser.add_argument("--evaluation-budget", default=0, type=int)
+    fleet_parser.add_argument("--gpu-mode", choices=("auto", "off", "force"), default="auto", type=str)
+    fleet_parser.add_argument("--protocol", default="", type=str)
+    fleet_parser.add_argument("--plots-after", action="store_true")
 
     ablation_parser = subparsers.add_parser("ablation")
     ablation_parser.add_argument("--project-root", default=".", type=str)
@@ -188,7 +186,7 @@ def main() -> None:
     artifacts_parser = subparsers.add_parser("paper-artifacts")
     artifacts_parser.add_argument("--project-root", default=".", type=str)
     artifacts_parser.add_argument("--results-dir", default="results/paper_artifacts", type=str)
-    artifacts_parser.add_argument("--protocol", default="configs/paper_medium_multi.yaml", type=str)
+    artifacts_parser.add_argument("--protocol", default="configs/paper_medium_fleet.yaml", type=str)
     artifacts_parser.add_argument("--gpu-mode", choices=("auto", "off", "force"), default="auto", type=str)
 
     path_parser = subparsers.add_parser("path-visualizer")
@@ -207,7 +205,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "benchmark" or args.command == "benchmark-multi":
+    if args.command == "benchmark" or args.command == "benchmark-fleet":
         project_root = Path(args.project_root).resolve()
         params = _build_params(args)
         params.results_dir = params.results_dir.resolve()
@@ -262,7 +260,7 @@ def main() -> None:
         protocol_path = Path(args.protocol).resolve()
         protocol = _load_protocol(protocol_path)
         params = BenchmarkParams.from_mapping(protocol)
-        params.mode = "multi"
+        params.mode = "fleet"
         params.gpu_mode = args.gpu_mode
         params.results_dir = Path(args.results_dir).resolve()
         run_benchmark(project_root, params)

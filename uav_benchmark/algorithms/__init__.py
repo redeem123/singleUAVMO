@@ -10,12 +10,12 @@ from uav_benchmark.algorithms.mfo_spea2 import run_mfo_spea2
 from uav_benchmark.algorithms.gcnmoea import run_gcnmoea
 from uav_benchmark.algorithms.cmosma import run_cmosma
 from uav_benchmark.algorithms.moqgwo import (
-    run_multi_moqgwo,
-    run_multi_moqgwo_no_attention,
-    run_multi_moqgwo_no_atlas,
-    run_multi_moqgwo_standard_gwo,
+    run_fleet_moqgwo,
+    run_fleet_moqgwo_no_attention,
+    run_fleet_moqgwo_no_atlas,
+    run_fleet_moqgwo_standard_gwo,
 )
-from uav_benchmark.algorithms.apex_shade import run_multi_apex_shade
+from uav_benchmark.algorithms.apex_shade import run_fleet_apex_shade
 from uav_benchmark.algorithms.tskac_nsga2 import run_tskac_nsga2
 
 __all__ = [
@@ -31,10 +31,10 @@ __all__ = [
     "run_mfo_spea2",
     "run_gcnmoea",
     "run_cmosma",
-    "run_multi_moqgwo",
-    "run_multi_moqgwo_no_attention",
-    "run_multi_moqgwo_no_atlas",
-    "run_multi_moqgwo_standard_gwo",
-    "run_multi_apex_shade",
+    "run_fleet_moqgwo",
+    "run_fleet_moqgwo_no_attention",
+    "run_fleet_moqgwo_no_atlas",
+    "run_fleet_moqgwo_standard_gwo",
+    "run_fleet_apex_shade",
     "run_tskac_nsga2",
 ]

@@ -60,7 +60,7 @@ def main() -> None:
 
     protocol = _load_protocol(Path(args.protocol).expanduser().resolve())
     base_params = BenchmarkParams.from_mapping(protocol)
-    base_params.mode = "multi"
+    base_params.mode = "fleet"
     base_params.results_dir = Path(args.results_root).expanduser().resolve()
     base_params.extra = dict(base_params.extra)
     base_params.extra["algorithms"] = ["MOQGWO"]
