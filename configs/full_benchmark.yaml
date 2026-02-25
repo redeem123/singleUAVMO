@@ -17,6 +17,7 @@ algorithms:
     "MOQGWO-NO-ATLAS",
     "MOQGWO-STANDARD-GWO",
     "MOPSO",
+    "SMPSO",
     "NMOPSO",
     "NSGA-II",
     "NSGA-III",

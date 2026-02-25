@@ -4,12 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
-from uav_benchmark.analysis.plots_multi_uav import generate_multi_uav_plots
-from uav_benchmark.analysis.compute_metrics import MetricConfig, compute_metrics
-from uav_benchmark.analysis.benchmark_report import ReportConfig, generate_benchmark_report
-from uav_benchmark.analysis.generate_research_plots import generate_research_plots
-from uav_benchmark.analysis.statistical_analysis import statistical_analysis
-from uav_benchmark.analysis.visualizers import path_visualizer, peak_visualizer
+from uav_benchmark.analysis.metrics.compute import MetricConfig, compute_metrics
+from uav_benchmark.analysis.metrics.report import ReportConfig, generate_benchmark_report
+from uav_benchmark.analysis.plotting.research import generate_research_plots
+from uav_benchmark.analysis.metrics.stats import statistical_analysis
+from uav_benchmark.analysis.plotting.visualizers import path_visualizer, peak_visualizer
 from uav_benchmark.benchmark import run_benchmark, run_nmopso_ablation
 from uav_benchmark.config import BenchmarkParams
 
@@ -214,10 +213,7 @@ def main() -> None:
         params.results_dir = params.results_dir.resolve()
         run_benchmark(project_root, params)
         if args.plots_after:
-            if str(params.mode).lower() == "multi":
-                generate_multi_uav_plots(project_root, params.results_dir.resolve())
-            else:
-                generate_research_plots(project_root, params.results_dir.resolve())
+            generate_research_plots(project_root, params.results_dir.resolve())
         return
     if args.command == "ablation":
         params = _build_params(args)
@@ -282,9 +278,9 @@ def main() -> None:
         generate_benchmark_report(cfg)
         stats_cfg = MetricConfig(hv_samples=2000, max_points=100, max_runs=0, seed=int(params.seed) if params.seed is not None else 0)
         statistical_analysis(params.results_dir, stats_cfg)
-        generate_multi_uav_plots(project_root, params.results_dir)
+        generate_research_plots(project_root, params.results_dir)
         print(params.results_dir / "metrics")
-        print(params.results_dir / "plots_multi_uav")
+        print(params.results_dir / "Plots")
         return
     if args.command == "path-visualizer":
         output = path_visualizer(

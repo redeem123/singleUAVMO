@@ -43,9 +43,9 @@ Generated multi-UAV problems are saved as:
 
 ## Algorithms
 
-- `RL-NMOPSO`
 - `NMOPSO`
 - `MOPSO`
+- `SMPSO`
 - `NSGA-II`
 
 ## Statistical Protocol

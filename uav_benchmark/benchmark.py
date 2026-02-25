@@ -16,19 +16,23 @@ from typing import Any, Callable
 import numpy as np
 
 from uav_benchmark.algorithms import (
-    run_ctmea,
     run_momfea,
     run_momfea2,
     run_mopso,
+    run_smpso,
     run_nmopso,
     run_nsga2,
     run_nsga3,
-    run_rl_nmopso,
+    run_moead,
+    run_spea2,
+    run_mfo_spea2,
+    run_cmosma,
     run_multi_moqgwo,
     run_multi_moqgwo_no_attention,
     run_multi_moqgwo_no_atlas,
     run_multi_moqgwo_standard_gwo,
     run_multi_apex_shade,
+    run_tskac_nsga2,
 )
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
@@ -43,34 +47,42 @@ AlgorithmRunner = Callable[[dict, BenchmarkParams], Any]
 # (function objects are not always picklable across processes).
 _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "NMOPSO": run_nmopso,
-    "RL-NMOPSO": run_rl_nmopso,
     "MOPSO": run_mopso,
+    "SMPSO": run_smpso,
     "NSGA-II": run_nsga2,
     "NSGA-III": run_nsga3,
+    "MOEAD": run_moead,
+    "SPEA2": run_spea2,
+    "MFO-SPEA2": run_mfo_spea2,
+    "CMOSMA": run_cmosma,
     "MO-MFEA": run_momfea,
     "MO-MFEA-II": run_momfea2,
-    "CTM-EA": run_ctmea,
     "MOQGWO": run_multi_moqgwo,
     "MOQGWO-NO-ATTENTION": run_multi_moqgwo_no_attention,
     "MOQGWO-NO-ATLAS": run_multi_moqgwo_no_atlas,
     "MOQGWO-STANDARD-GWO": run_multi_moqgwo_standard_gwo,
     "APEX-SHADE": run_multi_apex_shade,
+    "TSKAC-NSGA-II": run_tskac_nsga2,
 }
 
 _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "NMOPSO": 11,
-    "RL-NMOPSO": 19,
     "MOPSO": 23,
+    "SMPSO": 29,
     "NSGA-II": 37,
     "NSGA-III": 41,
+    "MOEAD": 43,
+    "SPEA2": 47,
+    "MFO-SPEA2": 61,
+    "CMOSMA": 59,
     "MO-MFEA": 53,
     "MO-MFEA-II": 67,
-    "CTM-EA": 79,
     "MOQGWO": 83,
     "MOQGWO-NO-ATTENTION": 89,
     "MOQGWO-NO-ATLAS": 101,
     "MOQGWO-STANDARD-GWO": 103,
     "APEX-SHADE": 97,
+    "TSKAC-NSGA-II": 107,
 }
 
 def _seed_for_task(base_seed: int, problem_index: int, algorithm_name: str) -> int:
@@ -82,13 +94,7 @@ def _seed_for_run(base_seed: int, problem_index: int, algorithm_name: str, run_i
 
 
 def _can_parallelize_runs(algorithm_name: str, params: BenchmarkParams) -> bool:
-    if algorithm_name != "RL-NMOPSO":
-        return True
-    # Training/warmstart share checkpoint state; keep those runs serialized.
-    # Freeze and online modes do not update shared checkpoints and can fan out.
-    extra = params.extra if isinstance(params.extra, dict) else {}
-    rl_policy_mode = str(extra.get("rlPolicyMode", "train")).strip().lower()
-    return rl_policy_mode in {"freeze", "online"}
+    return True
 
 
 def _next_dispatchable_task(
@@ -255,20 +261,26 @@ def _normalize_algorithm_name(name: str) -> str:
     key = str(name).strip().lower()
     if key in {"nmopso"}:
         return "NMOPSO"
-    if key in {"rl-nmopso", "rlnmopso", "rl_nmopso"}:
-        return "RL-NMOPSO"
     if key in {"mopso"}:
         return "MOPSO"
+    if key in {"smpso", "sm-pso", "sm_pso"}:
+        return "SMPSO"
     if key in {"nsga-ii", "nsga2", "nsga_ii"}:
         return "NSGA-II"
     if key in {"nsga-iii", "nsga3", "nsga_iii"}:
         return "NSGA-III"
+    if key in {"moead", "moea/d", "moea-d", "moea_d"}:
+        return "MOEAD"
+    if key in {"spea2", "spea-2", "spea_2"}:
+        return "SPEA2"
+    if key in {"mfo-spea2", "mfospea2", "mfo_spea2", "mfo-spea-2"}:
+        return "MFO-SPEA2"
+    if key in {"cmosma", "cmo-sma", "cmo_sma"}:
+        return "CMOSMA"
     if key in {"mo-mfea", "momfea"}:
         return "MO-MFEA"
     if key in {"mo-mfea-ii", "momfea2", "momfea-ii"}:
         return "MO-MFEA-II"
-    if key in {"ctm-ea", "ctmea"}:
-        return "CTM-EA"
     if key in {"moqgwo", "a2moqgwo", "a2-moqgwo"}:
         return "MOQGWO"
     if key in {
@@ -298,6 +310,15 @@ def _normalize_algorithm_name(name: str) -> str:
         return "MOQGWO-STANDARD-GWO"
     if key in {"apex-shade", "apexshade", "apex_shade"}:
         return "APEX-SHADE"
+    if key in {
+        "tskac-nsga-ii",
+        "tskac_nsga_ii",
+        "tskacnsga2",
+        "tskac-nsga2",
+        "tskac-nsgaii",
+        "tskacnsgaii",
+    }:
+        return "TSKAC-NSGA-II"
     return str(name).strip()
 
 
@@ -342,19 +363,23 @@ def _problem_name(problem_file: Path) -> str:
 
 def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, AlgorithmRunner]]:
     _known_order = [
-        "RL-NMOPSO",
         "NMOPSO",
         "MOPSO",
+        "SMPSO",
         "NSGA-II",
         "NSGA-III",
+        "MOEAD",
+        "SPEA2",
+        "MFO-SPEA2",
+        "CMOSMA",
         "MO-MFEA",
         "MO-MFEA-II",
-        "CTM-EA",
         "MOQGWO",
         "MOQGWO-NO-ATTENTION",
         "MOQGWO-NO-ATLAS",
         "MOQGWO-STANDARD-GWO",
         "APEX-SHADE",
+        "TSKAC-NSGA-II",
     ]
     mapping = [(name, _RUNNER_BY_NAME[name]) for name in _known_order if name in _RUNNER_BY_NAME]
     extra = [(name, runner) for name, runner in _RUNNER_BY_NAME.items() if name not in _known_order]
