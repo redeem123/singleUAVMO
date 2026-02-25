@@ -159,7 +159,7 @@ python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 - `scripts/legacy/`: Legacy migration/parity wrappers preserved for traceability.
 - `tests/`: Unit and smoke tests.
 - `docs/`: Protocol/reproducibility notes and reference papers.
-- `matlabimplementation/`: Original MATLAB-side implementation assets.
+- `uav_benchmark/analysis/matlab/`: MATLAB plotting drivers invoked from Python CLI.
 - `results/`: Generated benchmark outputs (ignored in Git for large artifacts).
 - `requirements-python.txt`, `requirements-gpu.txt`: CPU/GPU dependency sets.
 - `pyproject.toml`: Python project metadata.

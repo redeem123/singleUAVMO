@@ -38,6 +38,13 @@ def _bp_files_by_index(run_dir: Path) -> dict[int, Path]:
     return indexed
 
 
+def _full_length_bool_mask(values: object, size: int, threshold: float = 0.5) -> np.ndarray | None:
+    mask = np.asarray(values, dtype=float).reshape(-1)
+    if size <= 0 or mask.size != size:
+        return None
+    return mask > threshold
+
+
 def _feasible_indices(run_dir: Path, available_indices: set[int]) -> list[int]:
     final_popobj = run_dir / "final_popobj.mat"
     if not final_popobj.exists():
@@ -50,7 +57,31 @@ def _feasible_indices(run_dir: Path, available_indices: set[int]) -> list[int]:
         return []
     pop = _normalize_pop_obj(np.asarray(data["PopObj"], dtype=float))
     finite_rows = np.all(np.isfinite(pop), axis=1)
-    feasible = [row + 1 for row, ok in enumerate(finite_rows) if ok and (row + 1) in available_indices]
+    feasible_mask = finite_rows.copy()
+
+    mission_file = run_dir / "mission_stats.mat"
+    if mission_file.exists():
+        try:
+            mission = load_mat(mission_file)
+        except Exception:
+            mission = {}
+        mission_mask_applied = False
+        feasible = _full_length_bool_mask(mission.get("feasible"), pop.shape[0]) if "feasible" in mission else None
+        if feasible is not None:
+            feasible_mask &= feasible
+            mission_mask_applied = True
+        for key in ("separationViolation", "collisionViolation"):
+            if key not in mission:
+                continue
+            violation = _full_length_bool_mask(mission[key], pop.shape[0])
+            if violation is None:
+                continue
+            feasible_mask &= ~violation
+            mission_mask_applied = True
+        if not mission_mask_applied:
+            feasible_mask = finite_rows
+
+    feasible = [row + 1 for row, ok in enumerate(feasible_mask) if ok and (row + 1) in available_indices]
     return feasible
 
 
@@ -88,8 +119,8 @@ def path_visualizer(
             feasible_candidates = _feasible_indices(run_dir, available_indices)
             if not feasible_candidates:
                 raise RuntimeError(
-                    f"No feasible paths found in {run_dir}/final_popobj.mat "
-                    "for strict finite-objective check. Re-run with feasible_only=False."
+                    f"No feasible paths found in {run_dir} "
+                    "(finite objectives + mission violation masks). Re-run with feasible_only=False."
                 )
             candidates = feasible_candidates
         selected_index = int(np.random.choice(candidates))

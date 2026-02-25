@@ -8,6 +8,7 @@ import numpy as np
 
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.multi_uav import run_multi_nsga3
+from uav_benchmark.algorithms.single_uav_stats import build_single_uav_mission_stats
 from uav_benchmark.core.chromosome import Chromosome
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import f_operator, tournament_selection
@@ -125,9 +126,13 @@ def _nsga3_single_run(
         save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
     objective_matrix = np.array([candidate.objs for candidate in population], dtype=float)
     save_run_popobj(run_dir / "final_popobj.mat", objective_matrix, params.problem_index, objective_count)
+    saved_paths: list[np.ndarray] = []
     for candidate_index, candidate in enumerate(population, start=1):
+        saved_paths.append(np.asarray(candidate.path, dtype=float))
         save_bp(run_dir / f"bp_{candidate_index}.mat", candidate.path, candidate.objs)
-    feasible_count = int(np.sum(np.all(np.isfinite(objective_matrix), axis=1)))
+    mission_stats, feasible_mask = build_single_uav_mission_stats(saved_paths, model)
+    save_mat(run_dir / "mission_stats.mat", mission_stats)
+    feasible_count = int(np.sum(feasible_mask))
     save_mat(
         run_dir / "run_stats.mat",
         {

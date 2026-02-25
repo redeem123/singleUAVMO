@@ -356,7 +356,6 @@ def spherical_to_cart(solution: dict[str, np.ndarray], model: dict[str, Any]) ->
     xf, yf, zf = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
     if "safeH" in model and model["safeH"] is not None:
         zs = float(model["safeH"])
-        zf = float(model["safeH"])
     direction = np.array([xf - xs, yf - ys, zf - zs], dtype=float)
     phi_start = math.atan2(direction[1], direction[0])
     psi_start = math.atan2(direction[2], np.linalg.norm(direction[:2]))
@@ -391,7 +390,6 @@ def cart_to_absolute_path(cart: dict[str, np.ndarray], model: dict[str, Any]) ->
     xf, yf, zf = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
     if "safeH" in model and model["safeH"] is not None:
         zs = float(model["safeH"])
-        zf = float(model["safeH"])
     x_all = np.hstack([[xs], cart["x"], [xf]])
     y_all = np.hstack([[ys], cart["y"], [yf]])
     z_rel = np.hstack([[zs], cart["z"], [zf]])

@@ -170,20 +170,12 @@ def _constraint_violation(candidate: Candidate, model: dict[str, Any]) -> float:
         violation += 10.0 * max(1.0, non_finite)
 
     separation_min = float(model.get("separationMin", model.get("safeDist", 10.0)))
-    max_turn_deg = float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0)))
     drone_size = float(model.get("droneSize", 1.0))
 
     if float(details.get("separationViolation", 0.0)) > 0.5:
         min_sep = float(details.get("minSeparation", np.nan))
         if np.isfinite(min_sep):
             violation += max(0.0, (separation_min - min_sep) / max(separation_min, 1e-9))
-        else:
-            violation += 1.0
-
-    if float(details.get("turnViolation", 0.0)) > 0.5:
-        observed_turn = float(details.get("maxTurnDeg", np.nan))
-        if np.isfinite(observed_turn):
-            violation += max(0.0, (observed_turn - max_turn_deg) / max(max_turn_deg, 1e-9))
         else:
             violation += 1.0
 
@@ -304,7 +296,6 @@ def _save_multi_artifacts(
     if run_metadata:
         for key, value in run_metadata.items():
             run_stats[str(key)] = value
-    save_mat(run_dir / "run_stats.mat", run_stats)
 
     # RL trace
     if rl_trace is not None:
@@ -316,16 +307,48 @@ def _save_multi_artifacts(
     # Mission stats (fleet paths, conflict logs)
     fleet_paths: list[list[np.ndarray]] = []
     conflict_values: list[float] = []
+    feasible_values: list[float] = []
+    separation_values: list[float] = []
+    makespan_values: list[float] = []
+    energy_values: list[float] = []
+    risk_values: list[float] = []
+    max_turn_values: list[float] = []
+    turn_violation_values: list[float] = []
+    separation_violation_values: list[float] = []
+    collision_violation_values: list[float] = []
+    min_clearance_values: list[float] = []
     for c in final_candidates:
         paths = c.details.get("paths", [])
         fleet_paths.append(paths)
-        conflict_values.append(float(c.details.get("conflictRate", np.nan)))
+        details = c.details if isinstance(c.details, dict) else {}
+        conflict_values.append(float(details.get("conflictRate", np.nan)))
+        feasible_values.append(float(details.get("feasible", np.nan)))
+        separation_values.append(float(details.get("minSeparation", np.nan)))
+        makespan_values.append(float(details.get("makespan", np.nan)))
+        energy_values.append(float(details.get("energy", np.nan)))
+        risk_values.append(float(details.get("risk", np.nan)))
+        max_turn_values.append(float(details.get("maxTurnDeg", np.nan)))
+        turn_violation_values.append(float(details.get("turnViolation", np.nan)))
+        separation_violation_values.append(float(details.get("separationViolation", np.nan)))
+        collision_violation_values.append(float(details.get("collisionViolation", np.nan)))
+        min_clearance_values.append(float(details.get("minClearance", np.nan)))
 
     try:
         save_mat(run_dir / "mission_stats.mat", {
             "conflictMean": float(np.nanmean(conflict_values)) if conflict_values else 0.0,
             "conflictStd": float(np.nanstd(conflict_values)) if conflict_values else 0.0,
             "nSolutions": float(len(final_candidates)),
+            "feasible": np.asarray(feasible_values, dtype=float),
+            "conflictRate": np.asarray(conflict_values, dtype=float),
+            "minSeparation": np.asarray(separation_values, dtype=float),
+            "makespan": np.asarray(makespan_values, dtype=float),
+            "energy": np.asarray(energy_values, dtype=float),
+            "risk": np.asarray(risk_values, dtype=float),
+            "maxTurnDeg": np.asarray(max_turn_values, dtype=float),
+            "turnViolation": np.asarray(turn_violation_values, dtype=float),
+            "separationViolation": np.asarray(separation_violation_values, dtype=float),
+            "collisionViolation": np.asarray(collision_violation_values, dtype=float),
+            "minClearance": np.asarray(min_clearance_values, dtype=float),
         })
     except Exception:
         pass
@@ -345,6 +368,11 @@ def _save_multi_artifacts(
     # Conflict log
     if conflict_values:
         save_mat(run_dir / "conflict_log.mat", {"conflicts": np.array(conflict_values, dtype=float)})
+
+    feasible_array = np.asarray(feasible_values, dtype=float)
+    run_stats["solutionCount"] = int(final_matrix.shape[0]) if final_matrix.ndim == 2 else int(len(final_candidates))
+    run_stats["feasibleCount"] = int(np.sum(feasible_array > 0.5)) if feasible_array.size > 0 else 0
+    save_mat(run_dir / "run_stats.mat", run_stats)
 
 
 # ═══════════════════════════════════════════════════════════════════

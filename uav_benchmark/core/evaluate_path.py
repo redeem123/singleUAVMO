@@ -76,20 +76,15 @@ def _dist_points_to_segments_2d(
     return np.linalg.norm(centers[np.newaxis, :, :] - proj, axis=2)  # (N, M)
 
 
-def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
-    """Evaluate a UAV path against the 4-objective cost function.
-
-    Objectives
-    ----------
-    J1 : path length ratio  (1 − straight/total)
-    J2 : mean obstacle/terrain clearance penalty
-    J3 : mean altitude deviation penalty
-    J4 : mean turning-angle penalty with soft max-turn penalty
-    """
+def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[np.ndarray, dict[str, float]]:
+    """Evaluate a UAV path and expose additional feasibility diagnostics."""
     infinite_cost = float("inf")
     path_xyz = np.asarray(path_xyz, dtype=float)
     if path_xyz.ndim != 2 or path_xyz.shape[1] != 3 or path_xyz.shape[0] < 2:
-        return np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float)
+        return (
+            np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float),
+            {"collisionViolation": 1.0, "minClearance": float("-inf"), "maxTurnDeg": float("inf")},
+        )
 
     x_coord = path_xyz[:, 0]
     y_coord = path_xyz[:, 1]
@@ -99,7 +94,10 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
     ymin = _value(model, "ymin")
     ymax = _value(model, "ymax")
     if np.any(x_coord < xmin) or np.any(x_coord > xmax) or np.any(y_coord < ymin) or np.any(y_coord > ymax):
-        return np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float)
+        return (
+            np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float),
+            {"collisionViolation": 1.0, "minClearance": float("-inf"), "maxTurnDeg": float("inf")},
+        )
 
     height_map = np.asarray(model["H"], dtype=float)
     x_index = np.clip(np.rint(x_coord).astype(int), 1, int(xmax)) - 1
@@ -163,6 +161,7 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
     z_interp_rel = z_interp_abs - ground_interp
 
     # ── Objective 2: obstacle/terrain clearance (vectorised) ───────
+    min_clearance_global = float("inf")
     if interpolated.shape[0] < 2:
         second_objective = 0.0
     else:
@@ -199,6 +198,12 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
             ),
         )
         second_objective = float(np.sum(segment_penalty)) / max(1, n_seg)
+        if min_clearance.size > 0:
+            min_clearance_global = float(np.min(min_clearance))
+
+    collision_margin = _value(model, "collisionHardMargin", default=0.0)
+    collision_floor = max(0.0, drone_size + collision_margin)
+    collision_violation = float(min_clearance_global <= collision_floor + 1e-9)
 
     # ── Objective 3: altitude deviation (vectorised) ──────────────
     zmax_val = _value(model, "zmax")
@@ -223,6 +228,7 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
     spike_weight = max(0.0, _value(model, "turnSpikePenaltyWeight", "j4SpikePenaltyWeight", default=1.0))
     if path_xyz.shape[0] < 3:
         fourth_objective = 0.0
+        max_turn_deg = 0.0
     else:
         v1 = path_xyz[1:-1] - path_xyz[:-2]  # (N-2, 3)
         v2 = path_xyz[2:] - path_xyz[1:-1]   # (N-2, 3)
@@ -231,6 +237,7 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
         valid = (n1 > 0) & (n2 > 0)
         if not np.any(valid):
             fourth_objective = 0.0
+            max_turn_deg = 0.0
         else:
             cross_norms = np.linalg.norm(np.cross(v1[valid], v2[valid]), axis=1)
             dots = np.sum(v1[valid] * v2[valid], axis=1)
@@ -244,5 +251,26 @@ def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
             excess = max(0.0, max_turn - turn_limit_rad)
             spike_penalty = spike_weight * (excess / math.pi)
             fourth_objective = mean_turn + spike_penalty
+            max_turn_deg = float(np.degrees(max_turn))
 
-    return np.array([first_objective, second_objective, third_objective, fourth_objective], dtype=float)
+    objective = np.array([first_objective, second_objective, third_objective, fourth_objective], dtype=float)
+    details = {
+        "collisionViolation": collision_violation,
+        "minClearance": float(min_clearance_global),
+        "maxTurnDeg": max_turn_deg,
+    }
+    return objective, details
+
+
+def evaluate_path(path_xyz: np.ndarray, model: dict[str, Any]) -> np.ndarray:
+    """Evaluate a UAV path against the 4-objective cost function.
+
+    Objectives
+    ----------
+    J1 : path length ratio  (1 − straight/total)
+    J2 : mean obstacle/terrain clearance penalty
+    J3 : mean altitude deviation penalty
+    J4 : mean turning-angle penalty with soft max-turn penalty
+    """
+    objective, _ = evaluate_path_details(path_xyz, model)
+    return objective

@@ -36,6 +36,13 @@ def _safe_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in value)
 
 
+def _full_length_bool_mask(values: object, size: int, threshold: float = 0.5) -> np.ndarray | None:
+    mask = np.asarray(values, dtype=float).reshape(-1)
+    if size <= 0 or mask.size != size:
+        return None
+    return mask > threshold
+
+
 def _best_feasible_row(run_dir: Path) -> tuple[int, float] | None:
     pop_file = run_dir / "final_popobj.mat"
     if not pop_file.exists():
@@ -45,9 +52,31 @@ def _best_feasible_row(run_dir: Path) -> tuple[int, float] | None:
         return None
     pop_obj = _normalize_pop_obj(np.asarray(payload["PopObj"], dtype=float))
     finite = np.all(np.isfinite(pop_obj), axis=1)
-    if not np.any(finite):
+    feasible_mask = finite.copy()
+    mission_file = run_dir / "mission_stats.mat"
+    if mission_file.exists():
+        try:
+            mission = load_mat(mission_file)
+        except Exception:
+            mission = {}
+        mission_mask_applied = False
+        feasible = _full_length_bool_mask(mission.get("feasible"), pop_obj.shape[0]) if "feasible" in mission else None
+        if feasible is not None:
+            feasible_mask &= feasible
+            mission_mask_applied = True
+        for key in ("separationViolation", "collisionViolation"):
+            if key not in mission:
+                continue
+            violation = _full_length_bool_mask(mission[key], pop_obj.shape[0])
+            if violation is None:
+                continue
+            feasible_mask &= ~violation
+            mission_mask_applied = True
+        if not mission_mask_applied:
+            feasible_mask = finite
+    if not np.any(feasible_mask):
         return None
-    feasible_rows = np.where(finite)[0]
+    feasible_rows = np.where(feasible_mask)[0]
     scores = np.sum(pop_obj[feasible_rows], axis=1)
     local_best = int(np.argmin(scores))
     return int(feasible_rows[local_best]), float(scores[local_best])

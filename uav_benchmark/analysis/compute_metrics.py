@@ -39,6 +39,13 @@ def _align_mask(mask: np.ndarray, size: int) -> np.ndarray:
     return aligned
 
 
+def _full_length_bool_mask(values: Any, size: int, threshold: float = 0.5) -> np.ndarray | None:
+    mask = np.asarray(values, dtype=float).reshape(-1)
+    if size <= 0 or mask.size != size:
+        return None
+    return mask > threshold
+
+
 def _load_feasible_mask(run_dir: Path, count: int) -> np.ndarray:
     if count <= 0:
         return np.zeros(0, dtype=bool)
@@ -47,18 +54,25 @@ def _load_feasible_mask(run_dir: Path, count: int) -> np.ndarray:
     if not mission_file.exists():
         return fallback
     payload = load_mat(mission_file)
+    mask = fallback.copy()
+    mission_mask_applied = False
+
     if "feasible" in payload:
-        feasible = np.asarray(payload["feasible"], dtype=float).reshape(-1)
-        mask = _align_mask(feasible > 0.5, count)
-    else:
-        mask = fallback.copy()
-        if "turnViolation" in payload:
-            turn_violation = np.asarray(payload["turnViolation"], dtype=float).reshape(-1)
-            mask &= ~_align_mask(turn_violation > 0.5, count)
-        if "separationViolation" in payload:
-            separation_violation = np.asarray(payload["separationViolation"], dtype=float).reshape(-1)
-            mask &= ~_align_mask(separation_violation > 0.5, count)
-    return mask
+        feasible = _full_length_bool_mask(payload["feasible"], count)
+        if feasible is not None:
+            mask &= feasible
+            mission_mask_applied = True
+
+    for violation_key in ("separationViolation", "collisionViolation"):
+        if violation_key not in payload:
+            continue
+        violation = _full_length_bool_mask(payload[violation_key], count)
+        if violation is None:
+            continue
+        mask &= ~violation
+        mission_mask_applied = True
+
+    return mask if mission_mask_applied else fallback
 
 
 def _load_run_popobj(run_dir: Path) -> tuple[np.ndarray, int | None, int]:

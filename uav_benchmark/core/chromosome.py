@@ -117,11 +117,12 @@ class Chromosome:
         self.adjust_constraint_turning_angle(model)
         return self
 
-    def _horizontal_turn_violation(self, index: int) -> bool:
+    def _horizontal_turn_violation(self, index: int, max_turn_deg: float = 75.0) -> bool:
         alpha = self._horizontal_turn_angle_deg(index)
         if alpha is None:
             return False
-        return alpha < 75.0
+        heading_change = 180.0 - alpha
+        return heading_change > max_turn_deg
 
     def _horizontal_turn_angle_deg(self, index: int) -> float | None:
         segment_1 = float(np.linalg.norm(self.path[index, :2] - self.path[index - 1, :2]))
@@ -139,6 +140,7 @@ class Chromosome:
         self.path[0, 1] = float(np.asarray(model["start"]).reshape(-1)[1])
         self.path[0, 2] = _safe_height_start_end(model, self.path[0, 0], self.path[0, 1])
 
+        max_turn_deg = float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0)))
         n_points = self.path.shape[0]
         if int(model.get("ymax", 0)) == 200:
             horizontal_min = -2.0
@@ -148,7 +150,7 @@ class Chromosome:
             horizontal_max = 5.0
         for point_index in range(1, n_points - 1):
             retries = 0
-            while point_index > 2 and self._horizontal_turn_violation(point_index) and retries < 10:
+            while point_index > 2 and self._horizontal_turn_violation(point_index, max_turn_deg=max_turn_deg) and retries < 10:
                 if np.random.rand() < 0.5:
                     self.path[point_index, 1] = self.path[point_index - 1, 1] + np.random.uniform(horizontal_min, horizontal_max)
                 else:
@@ -188,6 +190,7 @@ class Chromosome:
 
     def compute_constraint_violation(self) -> None:
         violation = 0.0
+        max_turn_deg = 75.0
         for index in range(1, self.path.shape[0] - 1):
             horizontal_length = float(np.linalg.norm(self.path[index, :2] - self.path[index - 1, :2]))
             if horizontal_length > 0:
@@ -197,7 +200,8 @@ class Chromosome:
                     violation += vertical_angle - 60.0
             if index > 2:
                 horizontal_angle = self._horizontal_turn_angle_deg(index)
-                if horizontal_angle is not None and horizontal_angle < 75.0:
-                    # Keep parity with MATLAB: penalize by angle deficit.
-                    violation += abs(horizontal_angle - 75.0)
+                if horizontal_angle is not None:
+                    heading_change = 180.0 - horizontal_angle
+                    if heading_change > max_turn_deg:
+                        violation += heading_change - max_turn_deg
         self.cons = float(violation)

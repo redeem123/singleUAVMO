@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import time
 
 from uav_benchmark.config import BenchmarkParams
+from uav_benchmark.algorithms.single_uav_stats import build_single_uav_mission_stats
 from uav_benchmark.core.chromosome import Chromosome
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import environmental_selection, f_operator, tournament_selection
@@ -142,6 +144,7 @@ def run_ctmea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     )
 
     for run_index in range(1, params.runs + 1):
+        run_start = time.perf_counter()
         lam = options.lambda0
         beta = options.beta0
         current_model = _interpolate_models(easy_model, model, lam)
@@ -203,8 +206,20 @@ def run_ctmea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
         objective_matrix = np.array([item.objs for item in population], dtype=float)
         save_run_popobj(run_dir / "final_popobj.mat", objective_matrix, params.problem_index, objective_count)
+        saved_paths: list[np.ndarray] = []
         for solution_index, solution in enumerate(population, start=1):
+            saved_paths.append(np.asarray(solution.path, dtype=float))
             save_bp(run_dir / f"bp_{solution_index}.mat", solution.path, solution.objs)
+        mission_stats, feasible_mask = build_single_uav_mission_stats(saved_paths, model)
+        save_mat(run_dir / "mission_stats.mat", mission_stats)
+        save_mat(
+            run_dir / "run_stats.mat",
+            {
+                "runtimeSec": float(time.perf_counter() - run_start),
+                "feasibleCount": int(np.sum(feasible_mask)),
+                "solutionCount": int(objective_matrix.shape[0]),
+            },
+        )
 
         if params.compute_metrics:
             run_scores[run_index - 1] = np.array(

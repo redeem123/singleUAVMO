@@ -116,6 +116,13 @@ def _align_mask(mask: np.ndarray, size: int) -> np.ndarray:
     return aligned
 
 
+def _full_length_bool_mask(values: Any, size: int, threshold: float = 0.5) -> np.ndarray | None:
+    mask = np.asarray(values, dtype=float).reshape(-1)
+    if size <= 0 or mask.size != size:
+        return None
+    return mask > threshold
+
+
 def _load_feasible_mask(run_dir: Path, pop_obj: np.ndarray) -> np.ndarray:
     count = int(pop_obj.shape[0]) if pop_obj.ndim == 2 else 0
     finite_mask = np.all(np.isfinite(pop_obj), axis=1) if count > 0 else np.zeros(0, dtype=bool)
@@ -125,17 +132,26 @@ def _load_feasible_mask(run_dir: Path, pop_obj: np.ndarray) -> np.ndarray:
     if not mission_file.exists():
         return finite_mask
     payload = load_mat(mission_file)
+    feasible_mask = finite_mask.copy()
+    mission_mask_applied = False
+
     if "feasible" in payload:
-        feasible = np.asarray(payload["feasible"], dtype=float).reshape(-1)
-        feasible_mask = _align_mask(feasible > 0.5, count)
-    else:
-        feasible_mask = finite_mask.copy()
-        if "turnViolation" in payload:
-            turn_violation = np.asarray(payload["turnViolation"], dtype=float).reshape(-1)
-            feasible_mask &= ~_align_mask(turn_violation > 0.5, count)
-        if "separationViolation" in payload:
-            separation_violation = np.asarray(payload["separationViolation"], dtype=float).reshape(-1)
-            feasible_mask &= ~_align_mask(separation_violation > 0.5, count)
+        feasible = _full_length_bool_mask(payload["feasible"], count)
+        if feasible is not None:
+            feasible_mask &= feasible
+            mission_mask_applied = True
+
+    for violation_key in ("separationViolation", "collisionViolation"):
+        if violation_key not in payload:
+            continue
+        violation = _full_length_bool_mask(payload[violation_key], count)
+        if violation is None:
+            continue
+        feasible_mask &= ~violation
+        mission_mask_applied = True
+
+    if not mission_mask_applied:
+        return finite_mask
     return feasible_mask & finite_mask
 
 

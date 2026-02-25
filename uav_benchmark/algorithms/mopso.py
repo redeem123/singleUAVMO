@@ -9,6 +9,7 @@ import numpy as np
 
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.multi_uav import run_multi_mopso
+from uav_benchmark.algorithms.single_uav_stats import build_single_uav_mission_stats
 from uav_benchmark.core.evaluate_path import evaluate_path
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort
@@ -39,7 +40,6 @@ def _cost_function(position: Position, model: dict[str, Any]) -> np.ndarray:
     xf, yf, zf = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
     if "safeH" in model and model["safeH"] is not None:
         zs = float(model["safeH"])
-        zf = float(model["safeH"])
     x_all = np.hstack([[xs], position.x, [xf]])
     y_all = np.hstack([[ys], position.y, [yf]])
     z_rel = np.hstack([[zs], position.z, [zf]])
@@ -313,11 +313,12 @@ def run_mopso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
         final_objectives = _cost_matrix(archive) if archive else _cost_matrix(particles)
         save_run_popobj(run_dir / "final_popobj.mat", final_objectives, params.problem_index, objective_count)
         save_members = archive if archive else particles
+        saved_paths: list[np.ndarray] = []
         for member_index, member in enumerate(save_members, start=1):
             x_full = np.hstack([[model["start"][0]], member.position.x, [model["end"][0]]])
             y_full = np.hstack([[model["start"][1]], member.position.y, [model["end"][1]]])
             start_z = float(model.get("safeH", np.asarray(model["start"], dtype=float).reshape(-1)[2]))
-            end_z = float(model.get("safeH", np.asarray(model["end"], dtype=float).reshape(-1)[2]))
+            end_z = float(np.asarray(model["end"], dtype=float).reshape(-1)[2])
             z_rel = np.hstack([[start_z], member.position.z, [end_z]])
             z_abs = np.zeros_like(z_rel)
             for point_index in range(z_abs.shape[0]):
@@ -325,8 +326,11 @@ def run_mopso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
                 yi = int(np.clip(round(y_full[point_index]), 1, int(model["ymax"]))) - 1
                 z_abs[point_index] = z_rel[point_index] + float(np.asarray(model["H"], dtype=float)[yi, xi])
             path_xyz = np.column_stack([x_full, y_full, z_abs])
+            saved_paths.append(path_xyz)
             save_bp(run_dir / f"bp_{member_index}.mat", path_xyz, member.cost)
-        feasible_count = int(np.sum(np.all(np.isfinite(final_objectives), axis=1)))
+        mission_stats, feasible_mask = build_single_uav_mission_stats(saved_paths, model)
+        save_mat(run_dir / "mission_stats.mat", mission_stats)
+        feasible_count = int(np.sum(feasible_mask))
         save_mat(
             run_dir / "run_stats.mat",
             {

@@ -46,12 +46,36 @@ class BenchmarkReportFeasibleMaskTest(unittest.TestCase):
             save_mat(
                 run_dir / "mission_stats.mat",
                 {
-                    "turnViolation": np.array([1.0, 0.0], dtype=float),
+                    "collisionViolation": np.array([1.0, 0.0], dtype=float),
                     "separationViolation": np.array([0.0, 0.0], dtype=float),
                 },
             )
             mask = _load_feasible_mask(run_dir, pop_obj)
         self.assertEqual(mask.tolist(), [False, True])
+
+    def test_ignores_mismatched_feasible_vector_and_uses_full_length_violation_masks(self) -> None:
+        pop_obj = np.array(
+            [
+                [1.0, 2.0, 3.0, 4.0],
+                [2.0, 3.0, 4.0, 5.0],
+                [3.0, 4.0, 5.0, 6.0],
+            ],
+            dtype=float,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            save_mat(
+                run_dir / "mission_stats.mat",
+                {
+                    # Legacy/stale scalar should be ignored when length != PopObj rows.
+                    "feasible": np.array([0.0], dtype=float),
+                    "turnViolation": np.array([0.0, 1.0, 0.0], dtype=float),  # ignored for feasibility
+                    "separationViolation": np.array([0.0, 0.0, 0.0], dtype=float),
+                    "collisionViolation": np.array([0.0, 1.0, 0.0], dtype=float),
+                },
+            )
+            mask = _load_feasible_mask(run_dir, pop_obj)
+        self.assertEqual(mask.tolist(), [True, False, True])
 
 
 if __name__ == "__main__":

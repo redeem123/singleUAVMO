@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.core.evaluate_path import evaluate_path
+from uav_benchmark.core.evaluate_path import evaluate_path_details
 
 
 def _path_length(path_xyz: np.ndarray) -> float:
@@ -23,14 +23,15 @@ def _climb_cost(path_xyz: np.ndarray) -> float:
 def _max_turn_deg(path_xyz: np.ndarray) -> float:
     if path_xyz.shape[0] < 3:
         return 0.0
-    v1 = path_xyz[1:-1] - path_xyz[:-2]
-    v2 = path_xyz[2:] - path_xyz[1:-1]
+    # Horizontal heading change (yaw) to match path-generation constraints.
+    v1 = path_xyz[1:-1, :2] - path_xyz[:-2, :2]
+    v2 = path_xyz[2:, :2] - path_xyz[1:-1, :2]
     n1 = np.linalg.norm(v1, axis=1)
     n2 = np.linalg.norm(v2, axis=1)
     valid = (n1 > 0) & (n2 > 0)
     if not np.any(valid):
         return 0.0
-    cross_norms = np.linalg.norm(np.cross(v1[valid], v2[valid]), axis=1)
+    cross_norms = np.abs(v1[valid, 0] * v2[valid, 1] - v1[valid, 1] * v2[valid, 0])
     dots = np.sum(v1[valid] * v2[valid], axis=1)
     angles = np.arctan2(cross_norms, dots)
     return float(np.degrees(np.max(np.abs(angles))))
@@ -83,11 +84,14 @@ def evaluate_mission_details(
     separation_min = float(model.get("separationMin", model.get("safeDist", 10.0)))
     max_turn_deg = float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0)))
     climb_weight = float(model.get("climbWeight", 0.2))
+    hard_collision = bool(model.get("hardCollisionConstraint", True))
 
     path_objs = []
     lengths = []
     energies = []
     infeasible = False
+    collision_violation = False
+    min_clearance = np.inf
     turn_violation = False
     turn_excess_terms: list[float] = []
     max_turn_observed = 0.0
@@ -98,12 +102,17 @@ def evaluate_mission_details(
         path_eval_model["rmin"] = 0.0
     for path in paths_xyz:
         path = np.asarray(path, dtype=float)
-        obj = evaluate_path(path, path_eval_model)
+        obj, path_details = evaluate_path_details(path, path_eval_model)
         path_objs.append(obj)
         lengths.append(_path_length(path))
         energies.append(_path_length(path) + climb_weight * _climb_cost(path))
         if np.any(~np.isfinite(obj)):
             infeasible = True
+        if float(path_details.get("collisionViolation", 0.0)) > 0.5:
+            collision_violation = True
+        path_clearance = float(path_details.get("minClearance", np.nan))
+        if np.isfinite(path_clearance):
+            min_clearance = min(min_clearance, path_clearance)
         max_turn = _max_turn_deg(path)
         max_turn_observed = max(max_turn_observed, max_turn)
         if max_turn > max_turn_deg:
@@ -144,7 +153,7 @@ def evaluate_mission_details(
     turn_penalty = float(np.mean(np.asarray(turn_excess_terms, dtype=float))) if turn_excess_terms else 0.0
     obj = np.array([makespan, energy, risk, conflict_rate + 0.35 * turn_penalty], dtype=float)
     separation_violation = bool(np.isfinite(min_sep) and min_sep < separation_min)
-    if infeasible or separation_violation:
+    if infeasible or separation_violation or (hard_collision and collision_violation):
         obj[:] = np.inf
     details = {
         "feasible": float(np.all(np.isfinite(obj))),
@@ -157,6 +166,8 @@ def evaluate_mission_details(
         "turnViolation": float(turn_violation),
         "turnPenalty": turn_penalty,
         "separationViolation": float(separation_violation),
+        "collisionViolation": float(collision_violation),
+        "minClearance": float(min_clearance if np.isfinite(min_clearance) else np.nan),
         "conflictLog": np.asarray(conflict_rows, dtype=float).reshape(-1, 5) if conflict_rows else np.zeros((0, 5), dtype=float),
         "pathObjectives": path_obj_mat,
     }

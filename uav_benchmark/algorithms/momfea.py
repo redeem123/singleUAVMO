@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import time
 
 from uav_benchmark.config import BenchmarkParams
+from uav_benchmark.algorithms.single_uav_stats import build_single_uav_mission_stats
 from uav_benchmark.core.evaluate_path import evaluate_path
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort, tournament_selection
@@ -160,6 +162,7 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
     generations = max(1, max_fe // max(1, params.population))
 
     for run_index in range(1, params.runs + 1):
+        run_start = time.perf_counter()
         population = _initialize_population(model, aux_model, n_control, params.population)
         for gen in range(generations):
             # MO-MFEA-II: adaptive RMP — crossover rate decays, mutation grows
@@ -182,9 +185,21 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
         run_dir = results_path / f"Run_{run_index}"
         ensure_dir(run_dir)
         save_run_popobj(run_dir / "final_popobj.mat", pop_obj, params.problem_index, objective_count)
+        saved_paths: list[np.ndarray] = []
         for solution_index in range(pop_obj.shape[0]):
             path = _decode_uav_path(pop_dec[solution_index, :-1], model, n_control)
+            saved_paths.append(np.asarray(path, dtype=float))
             save_bp(run_dir / f"bp_{solution_index + 1}.mat", path, pop_obj[solution_index])
+        mission_stats, feasible_mask = build_single_uav_mission_stats(saved_paths, model)
+        save_mat(run_dir / "mission_stats.mat", mission_stats)
+        save_mat(
+            run_dir / "run_stats.mat",
+            {
+                "runtimeSec": float(time.perf_counter() - run_start),
+                "feasibleCount": int(np.sum(feasible_mask)),
+                "solutionCount": int(pop_obj.shape[0]),
+            },
+        )
         if params.compute_metrics:
             run_scores[run_index - 1] = np.array(
                 [

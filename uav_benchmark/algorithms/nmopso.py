@@ -9,6 +9,7 @@ import numpy as np
 
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.multi_uav import run_multi_nmopso
+from uav_benchmark.algorithms.single_uav_stats import build_single_uav_mission_stats
 from uav_benchmark.core.evaluate_path import evaluate_path
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import save_bp, save_mat, save_run_popobj
@@ -135,7 +136,6 @@ def _nmopso_cost(cart_sol: dict[str, np.ndarray], model: dict[str, Any]) -> np.n
     xf, yf, zf = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
     if "safeH" in model and model["safeH"] is not None:
         zs = float(model["safeH"])
-        zf = float(model["safeH"])
     x_all = np.hstack([[xs], cart_sol["x"], [xf]])
     y_all = np.hstack([[ys], cart_sol["y"], [yf]])
     z_rel = np.hstack([[zs], cart_sol["z"], [zf]])
@@ -448,11 +448,15 @@ def run_nmopso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
         final_members = repository if repository else particles
         final_costs = np.array([entry.cost for entry in final_members], dtype=float)
         save_run_popobj(run_dir / "final_popobj.mat", final_costs, params.problem_index, objective_count)
+        saved_paths: list[np.ndarray] = []
         for member_index, member in enumerate(final_members, start=1):
             cart = nmopso_utils.position_to_cart(member.position, model, representation)
             path_xyz = nmopso_utils.cart_to_absolute_path(cart, model)
+            saved_paths.append(path_xyz)
             save_bp(run_dir / f"bp_{member_index}.mat", path_xyz, member.cost)
-        feasible_count = int(np.sum(np.all(np.isfinite(final_costs), axis=1)))
+        mission_stats, feasible_mask = build_single_uav_mission_stats(saved_paths, model)
+        save_mat(run_dir / "mission_stats.mat", mission_stats)
+        feasible_count = int(np.sum(feasible_mask))
         save_mat(
             run_dir / "run_stats.mat",
             {
