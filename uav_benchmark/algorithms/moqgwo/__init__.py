@@ -1,4 +1,4 @@
-"""MOQGWO family runner with CDP feasibility + attention fusion + Atlas archive."""
+"""MOQGWO family runner with attention fusion + Atlas archive."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -10,8 +10,6 @@ import numpy as np
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.shared.fleet_runner import (
     _build_bounds,
-    _constraint_violation,
-    _constraint_violation_vector,
     _evaluate_population,
     _resolve_run_indices,
     _resume_run_scores,
@@ -30,8 +28,6 @@ from uav_benchmark.algorithms.nmopso import (
     topology_signature,
     topology_bin_from_signature,
     robustness_from_cost,
-    delete_one_with_weights,
-    select_leader_with_weights,
     AtlasConfig,
 )
 from uav_benchmark.algorithms.moqgwo.gpu_strict_ops import (
@@ -64,27 +60,15 @@ class QGWO_Engine:
         self.positions = np.random.uniform(lower, upper, size=(pop_size, self.dim))
         self.leaders   = np.zeros((3, self.dim))
 
-    # -- Self-Attention --------------------------------------------------
-    def _self_attention(self, pos: np.ndarray, leaders: np.ndarray) -> np.ndarray:
-        """Normalised self-attention: avoids score collapse in high dimensions.
-
-        Each leader vector and the query position are L2-normalised before
-        computing dot-product similarities, making the scores O(1) regardless
-        of dimension size.
-        """
-        # Normalise query and keys to unit sphere
+    # -- Attention -------------------------------------------------------
+    def _attention_weights(self, pos: np.ndarray, leaders: np.ndarray) -> np.ndarray:
+        """Return softmax weights over (alpha, beta, delta) for one wolf."""
         pos_norm = pos / (np.linalg.norm(pos) + 1e-12)
         leader_norms = leaders / (np.linalg.norm(leaders, axis=1, keepdims=True) + 1e-12)
-
-        # Scaled dot-product attention (sqrt(d_k) cancels for unit norms, but kept for clarity)
-        scores = leader_norms @ pos_norm  # shape (3,)
-
-        # Numerically stable softmax
+        scores = leader_norms @ pos_norm
         scores = scores - np.max(scores)
         weights = np.exp(scores)
-        weights = weights / (weights.sum() + 1e-12)  # shape (3,)
-
-        return (weights[:, None] * leaders).sum(axis=0)  # weighted sum of original leaders
+        return weights / (weights.sum() + 1e-12)
 
     # -- One generation step --------------------------------------------
     def step(self, generation: int, max_generations: int) -> np.ndarray:
@@ -93,23 +77,26 @@ class QGWO_Engine:
         a = 2.0 - generation * (2.0 / max_generations)
 
         # Standard GWO estimate from 3 leaders
-        X_GWO = np.zeros_like(self.positions)
+        X_terms = np.zeros((3, self.pop_size, self.dim), dtype=float)
         for j in range(3):
             r1 = np.random.rand(self.pop_size, self.dim)
             r2 = np.random.rand(self.pop_size, self.dim)
             A  = 2.0 * a * r1 - a
             C  = 2.0 * r2
             D  = np.abs(C * self.leaders[j] - self.positions)
-            X_GWO += self.leaders[j] - A * D
-        X_GWO /= 3.0
+            X_terms[j] = self.leaders[j] - A * D
+        X_GWO = np.mean(X_terms, axis=0)
 
         if self.use_attention:
-            # Attention-guided fusion of alpha/beta/delta attraction.
-            attn_center = np.stack([
-                self._self_attention(self.positions[i], self.leaders)
+            # Attention-guided leader fusion: reweight alpha/beta/delta update
+            # terms directly, so attention modulates GWO dynamics rather than
+            # adding a separate centroid pull.
+            leader_weights = np.stack([
+                self._attention_weights(self.positions[i], self.leaders)
                 for i in range(self.pop_size)
-            ])
-            new_positions = 0.5 * X_GWO + 0.5 * attn_center
+            ])  # (pop, 3)
+            terms_by_wolf = np.transpose(X_terms, (1, 0, 2))  # (pop, 3, dim)
+            new_positions = np.sum(leader_weights[:, :, None] * terms_by_wolf, axis=1)
         else:
             new_positions = X_GWO
 
@@ -130,14 +117,33 @@ class QGWO_Engine:
 def _build_grid(
     obj_matrix: np.ndarray,
     divisions: int,
+    inflation_alpha: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if obj_matrix.size == 0:
         return np.zeros(0, dtype=int), np.zeros(0, dtype=int), np.zeros((0, obj_matrix.shape[1]))
-    min_vals = np.min(obj_matrix, axis=0)
-    max_vals = np.max(obj_matrix, axis=0)
+    obj_safe = np.asarray(obj_matrix, dtype=float).copy()
+    n_obj = obj_safe.shape[1]
+    min_vals = np.zeros(n_obj, dtype=float)
+    max_vals = np.zeros(n_obj, dtype=float)
+    for j in range(n_obj):
+        col = obj_safe[:, j]
+        finite = np.isfinite(col)
+        if np.any(finite):
+            min_vals[j] = float(np.min(col[finite]))
+            max_vals[j] = float(np.max(col[finite]))
+            col[~finite] = max_vals[j]
+            obj_safe[:, j] = col
+        else:
+            min_vals[j] = 0.0
+            max_vals[j] = 1.0
+            obj_safe[:, j] = 0.0
+    if inflation_alpha > 0.0:
+        delta = max_vals - min_vals
+        min_vals = min_vals - inflation_alpha * delta
+        max_vals = max_vals + inflation_alpha * delta
     with np.errstate(divide="ignore", invalid="ignore"):
         step = (max_vals - min_vals) / divisions
-        raw  = np.floor((obj_matrix - min_vals) / step)
+        raw  = np.floor((obj_safe - min_vals) / step)
     raw  = np.nan_to_num(raw, nan=0.0, posinf=divisions - 1, neginf=0.0)
     cell = np.clip(raw.astype(int), 0, divisions - 1)
     basis  = divisions ** np.arange(obj_matrix.shape[1])
@@ -146,8 +152,143 @@ def _build_grid(
     return linear, unique, counts
 
 
+def _stable_softmax(logits: np.ndarray) -> np.ndarray:
+    logits = np.asarray(logits, dtype=float).reshape(-1)
+    n = logits.size
+    if n == 0:
+        return logits
+    finite_mask = np.isfinite(logits)
+    if not np.any(finite_mask):
+        return np.ones(n, dtype=float) / float(n)
+    work = np.where(finite_mask, logits, -np.inf)
+    max_logit = np.max(work)
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        exps = np.exp(work - max_logit)
+    exps[~finite_mask] = 0.0
+    total = float(np.sum(exps))
+    if not np.isfinite(total) or total <= 0.0:
+        return np.ones(n, dtype=float) / float(n)
+    return exps / total
+
+
+def _occupancy_per_solution(indices: np.ndarray) -> np.ndarray:
+    if indices.size == 0:
+        return np.zeros(0, dtype=float)
+    _, inverse, counts = np.unique(indices, return_inverse=True, return_counts=True)
+    return counts[inverse].astype(float)
+
+
+def _weighted_occ_sample(
+    grid_indices: np.ndarray,
+    atlas_indices: np.ndarray | None,
+    objective_weight: float,
+    atlas_weight: float,
+    scale: float,
+    inverse: bool,
+) -> int:
+    obj_occ = _occupancy_per_solution(grid_indices)
+    atlas_occ = (
+        _occupancy_per_solution(atlas_indices)
+        if (atlas_indices is not None and atlas_indices.size == grid_indices.size)
+        else np.ones_like(obj_occ)
+    )
+    occ = objective_weight * obj_occ + atlas_weight * atlas_occ
+    logits = (-scale * occ) if inverse else (scale * occ)
+    probs = _stable_softmax(logits)
+    return int(np.random.choice(probs.shape[0], p=probs))
+
+
+def _paper_select_cell_member(grid_indices: np.ndarray) -> int:
+    """Paper-style leader selection: roulette over cells with P(cell) ∝ 1/Ni."""
+    if grid_indices.size == 0:
+        return 0
+    cells, inverse, counts = np.unique(grid_indices, return_inverse=True, return_counts=True)
+    del cells
+    cell_weights = 1.0 / np.maximum(1.0, counts.astype(float))
+    cell_probs = cell_weights / np.sum(cell_weights)
+    chosen_cell = int(np.random.choice(cell_probs.shape[0], p=cell_probs))
+    members = np.where(inverse == chosen_cell)[0]
+    return int(members[np.random.randint(0, members.size)])
+
+
+def _paper_delete_cell_member(grid_indices: np.ndarray) -> int:
+    """Paper-style archive delete: roulette over most crowded tendency with P(cell) ∝ Ni."""
+    if grid_indices.size == 0:
+        return 0
+    cells, inverse, counts = np.unique(grid_indices, return_inverse=True, return_counts=True)
+    del cells
+    cell_weights = counts.astype(float)
+    cell_probs = cell_weights / np.sum(cell_weights)
+    chosen_cell = int(np.random.choice(cell_probs.shape[0], p=cell_probs))
+    members = np.where(inverse == chosen_cell)[0]
+    return int(members[np.random.randint(0, members.size)])
+
+
+def _dominates_objective(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> bool:
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    return bool(np.all(a <= (b + eps)) and np.any(a < (b - eps)))
+
+
+def _paper_archive_update(
+    archive: list[Candidate],
+    new_cands: list[Candidate],
+    max_size: int,
+    divisions: int,
+) -> list[Candidate]:
+    """Foundation-paper style archive controller (objective-only)."""
+    rep = list(archive)
+    if rep:
+        rep_obj = np.stack([c.objective for c in rep])
+        fronts, _ = n_d_sort(rep_obj.copy(), None, rep_obj.shape[0])
+        rep = [rep[i] for i in np.where(fronts == 1)[0]]
+    while len(rep) > max_size:
+        rep_obj = np.stack([c.objective for c in rep])
+        grid, _, _ = _build_grid(rep_obj, divisions, inflation_alpha=0.1)
+        kill_idx = _paper_delete_cell_member(grid)
+        rep.pop(kill_idx)
+
+    for cand in new_cands:
+        if not rep:
+            rep.append(cand)
+            continue
+
+        dominated_by_rep = False
+        dominates_rep: list[int] = []
+        for idx, member in enumerate(rep):
+            if _dominates_objective(member.objective, cand.objective):
+                dominated_by_rep = True
+                break
+            if _dominates_objective(cand.objective, member.objective):
+                dominates_rep.append(idx)
+        if dominated_by_rep:
+            continue
+        if dominates_rep:
+            for idx in sorted(dominates_rep, reverse=True):
+                rep.pop(idx)
+
+        if len(rep) >= max_size:
+            rep_obj = np.stack([c.objective for c in rep])
+            grid, _, _ = _build_grid(rep_obj, divisions, inflation_alpha=0.1)
+            kill_idx = _paper_delete_cell_member(grid)
+            rep.pop(kill_idx)
+        rep.append(cand)
+
+    if not rep:
+        return rep
+    rep_obj = np.stack([c.objective for c in rep])
+    fronts, _ = n_d_sort(rep_obj.copy(), None, rep_obj.shape[0])
+    rep = [rep[i] for i in np.where(fronts == 1)[0]]
+    while len(rep) > max_size:
+        rep_obj = np.stack([c.objective for c in rep])
+        grid, _, _ = _build_grid(rep_obj, divisions, inflation_alpha=0.1)
+        kill_idx = _paper_delete_cell_member(grid)
+        rep.pop(kill_idx)
+    return rep
+
+
 # ─────────────────────────────────────────────────────────────────────
-# CDP Archive Update — with constraint-domination principle
+# Archive Update
 # ─────────────────────────────────────────────────────────────────────
 
 def _update_archive(
@@ -157,80 +298,42 @@ def _update_archive(
     max_size: int,
     divisions: int,
     atlas_config: AtlasConfig,
-    model: dict,
     paper_standard: bool = False,
 ) -> tuple[list[Candidate], np.ndarray | None]:
-    """Merge + prune archive using CDP + non-dominated sorting + Atlas truncation.
+    """Merge + prune archive using non-dominated sorting + Atlas truncation.
 
     Returns (kept_candidates, kept_atlas_indices).
     """
+    if paper_standard:
+        kept = _paper_archive_update(archive, new_cands, max_size, divisions)
+        return kept, None
+
     all_cands = list(archive) + list(new_cands)
     if not all_cands:
         return [], (np.zeros(0, dtype=int) if atlas_indices is not None else None)
 
     total      = len(all_cands)
     obj_all    = np.stack([c.objective for c in all_cands])
-    cv_all     = _constraint_violation_vector(all_cands, model)
     atlas_all: np.ndarray | None = None
     if atlas_indices is not None and atlas_indices.size == total:
         atlas_all = atlas_indices
 
-    # ── Phase 1: Feasibility filter ─────────────────────────────────
-    feas_mask  = cv_all <= 0.0
-    n_feas     = int(feas_mask.sum())
-
-    if n_feas == 0:
-        # No feasible solutions — keep least-violating (CDP)
-        order = np.argsort(cv_all)[:max_size]
-        kept  = [all_cands[i] for i in order]
-        kept_atlas = atlas_all[order] if atlas_all is not None else None
-        return kept, kept_atlas
-
-    # Work on feasible pool only
-    feas_idx  = np.where(feas_mask)[0]
-    feas_obj  = obj_all[feas_idx]
-
-    if paper_standard:
-        # MOGWO foundation-paper behavior: keep non-dominated front only,
-        # then truncate by crowding grid (objective space only).
-        fronts, _ = n_d_sort(feas_obj.copy(), None, feas_idx.size)
-        front1 = feas_idx[fronts == 1]
-        if front1.size == 0:
-            front1 = feas_idx
-        if front1.size <= max_size:
-            kept = [all_cands[i] for i in front1]
-            kept_atlas = atlas_all[front1] if atlas_all is not None else None
-            return kept, kept_atlas
-        f1_obj = obj_all[front1]
-        grid, _, _ = _build_grid(f1_obj, divisions)
-        delete_mask = np.zeros(front1.size, dtype=bool)
-        while int((~delete_mask).sum()) > max_size:
-            active = np.where(~delete_mask)[0]
-            active_grid = grid[active]
-            kill_local = delete_one_with_weights(
-                active_grid, 10.0, 1.0, 0.0, None
-            )
-            delete_mask[active[kill_local]] = True
-        keep_global = front1[np.where(~delete_mask)[0]]
-        kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
-        return [all_cands[i] for i in keep_global], kept_atlas
-
-    # ── Phase 2: Non-dominated sorting (progressive fronts) ──────────
-    fronts, _ = n_d_sort(feas_obj.copy(), None, feas_idx.size)
+    # ── Phase 1: Non-dominated sorting (progressive fronts) ──────────
+    fronts, _ = n_d_sort(obj_all.copy(), None, total)
     selected: list[int] = []
     rank = 1
     while len(selected) < max_size:
         local_front = np.where(fronts == rank)[0]
         if local_front.size == 0:
             break
-        global_front = feas_idx[local_front]
+        global_front = local_front
         remaining = max_size - len(selected)
         if global_front.size <= remaining:
             selected.extend(global_front.tolist())
             rank += 1
             continue
 
-        # ── Phase 3: Atlas truncation on partial front ──────────────
+        # ── Phase 2: Atlas truncation on partial front ──────────────
         pool_global = np.concatenate([np.asarray(selected, dtype=int), global_front])
         pool_obj = obj_all[pool_global]
         pool_atl = atlas_all[pool_global] if atlas_all is not None else None
@@ -241,11 +344,13 @@ def _update_archive(
             active = np.where(~delete_mask)[0]
             active_grid = grid[active]
             active_atl = pool_atl[active] if pool_atl is not None else None
-            kill_local = delete_one_with_weights(
-                active_grid, 10.0,
+            kill_local = _weighted_occ_sample(
+                active_grid,
+                active_atl if atlas_config.enabled else None,
                 atlas_config.objective_weight,
                 atlas_config.atlas_weight,
-                active_atl if atlas_config.enabled else None,
+                scale=10.0,
+                inverse=False,
             )
             delete_mask[active[kill_local]] = True
 
@@ -254,7 +359,7 @@ def _update_archive(
         return [all_cands[i] for i in keep_global], kept_atlas
 
     if not selected:
-        selected = feas_idx[: min(max_size, feas_idx.size)].tolist()
+        selected = np.arange(min(max_size, total), dtype=int).tolist()
     keep_global = np.asarray(selected[:max_size], dtype=int)
     kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
     return [all_cands[i] for i in keep_global], kept_atlas
@@ -285,7 +390,7 @@ def _atlas_for_candidates(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Leader Selection — feasibility-first + atlas-aware
+# Leader Selection — objective-grid + atlas-aware
 # ─────────────────────────────────────────────────────────────────────
 
 def _select_leaders(
@@ -293,27 +398,18 @@ def _select_leaders(
     atlas_indices: np.ndarray | None,
     divisions: int,
     atlas_config: AtlasConfig,
-    model: dict,
     paper_standard: bool = False,
 ) -> np.ndarray:
-    """Select 3 leaders (alpha, beta, delta) using CDP priority + atlas weights.
-
-    Preferentially draws from feasible archive members; falls back to
-    full archive if fewer than 3 feasible exist.
-    """
+    """Select 3 leaders (alpha, beta, delta) from archive grid occupancy."""
     n = len(archive)
     if n == 0:
         return np.zeros((3, archive[0].vector.size if archive else 1))
 
-    cv = _constraint_violation_vector(archive, model)
-    feas_mask = cv <= 0.0
-    feas_idx  = np.where(feas_mask)[0]
-
-    pool_idx = feas_idx if feas_idx.size > 0 else np.arange(n)
+    pool_idx = np.arange(n)
 
     pool_obj  = np.stack([archive[i].objective for i in pool_idx])
     pool_atl  = atlas_indices[pool_idx] if atlas_indices is not None else None
-    grid, _, _ = _build_grid(pool_obj, divisions)
+    grid, _, _ = _build_grid(pool_obj, divisions, inflation_alpha=(0.1 if paper_standard else 0.0))
 
     leaders = []
     available_local = np.arange(pool_idx.size)
@@ -322,13 +418,18 @@ def _select_leaders(
             available_local = np.arange(pool_idx.size)
         active_grid = grid[available_local]
         active_atl = pool_atl[available_local] if pool_atl is not None else None
-        idx_in_pool = select_leader_with_weights(
-            active_grid, 10.0,
-            1.0 if paper_standard else atlas_config.objective_weight,
-            0.0 if paper_standard else atlas_config.atlas_weight,
-            None if paper_standard else (active_atl if atlas_config.enabled else None),
-        )
-        chosen_local = available_local[idx_in_pool]
+        if paper_standard:
+            idx_in_active = _paper_select_cell_member(active_grid)
+        else:
+            idx_in_active = _weighted_occ_sample(
+                active_grid,
+                active_atl if atlas_config.enabled else None,
+                atlas_config.objective_weight,
+                atlas_config.atlas_weight,
+                scale=10.0,
+                inverse=True,
+            )
+        chosen_local = available_local[idx_in_active]
         leaders.append(archive[pool_idx[chosen_local]].vector.copy())
         available_local = available_local[available_local != chosen_local]
 
@@ -362,7 +463,7 @@ def _apply_variant(params: BenchmarkParams, *, variant: str | None = None, use_a
 
 
 def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    """MOQGWO family runner with CDP feasibility and Atlas-aware archive."""
+    """MOQGWO family runner with attention fusion and Atlas-aware archive."""
     objective_count = 4
     model = dict(model)
     n_waypoints     = int(model.get("n", 10))
@@ -481,14 +582,14 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         # Bootstrap archive
         archive, arc_atlas = _update_archive(
             [], init_cands, init_atlas,
-            archive_size, grid_divisions, active_atlas_config, model,
+            archive_size, grid_divisions, active_atlas_config,
             paper_standard=paper_standard,
         )
 
         # Set initial leaders from archive
         if archive:
             selected_leaders = _select_leaders(
-                archive, arc_atlas, grid_divisions, active_atlas_config, model,
+                archive, arc_atlas, grid_divisions, active_atlas_config,
                 paper_standard=paper_standard,
             )
             if use_gpu_strict:
@@ -518,19 +619,19 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 else None
             )
 
-            # Archive update (CDP-aware)
+            # Archive update
             combined_atlas = None
             if arc_atlas is not None and new_atlas is not None:
                 combined_atlas = np.concatenate([arc_atlas, new_atlas])
             archive, arc_atlas = _update_archive(
                 archive, new_cands, combined_atlas,
-                archive_size, grid_divisions, active_atlas_config, model,
+                archive_size, grid_divisions, active_atlas_config,
                 paper_standard=paper_standard,
             )
 
             if archive:
                 selected_leaders = _select_leaders(
-                    archive, arc_atlas, grid_divisions, active_atlas_config, model,
+                    archive, arc_atlas, grid_divisions, active_atlas_config,
                     paper_standard=paper_standard,
                 )
                 if use_gpu_strict:
@@ -564,7 +665,24 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 last_cands = _evaluate_population(
                     engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
                 )
-            archive = sorted(last_cands, key=lambda c: _constraint_violation(c, model))[:archive_size]
+            if paper_standard:
+                last_obj = np.stack([c.objective for c in last_cands]) if last_cands else np.zeros((0, objective_count))
+                if last_obj.size > 0:
+                    fronts, _ = n_d_sort(last_obj.copy(), None, last_obj.shape[0])
+                    front1 = np.where(fronts == 1)[0]
+                    archive = [last_cands[i] for i in front1[:archive_size]]
+                else:
+                    archive = []
+            else:
+                last_obj = np.stack([c.objective for c in last_cands]) if last_cands else np.zeros((0, objective_count))
+                if last_obj.size > 0:
+                    fronts, _ = n_d_sort(last_obj.copy(), None, last_obj.shape[0])
+                    selected = np.where(fronts == 1)[0]
+                    if selected.size == 0:
+                        selected = np.arange(min(archive_size, last_obj.shape[0]), dtype=int)
+                    archive = [last_cands[i] for i in selected[:archive_size]]
+                else:
+                    archive = []
 
         _save_fleet_artifacts(
             run_dir=run_dir,
