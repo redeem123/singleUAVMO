@@ -1,14 +1,4 @@
-"""A²-MOQGWO: Attention-Augmented Multi-Objective Quantum Grey Wolf Optimizer.
-
-Fixed version addressing:
-  1. Proper hard constraint handling (CDP replaces is_rl=True bypass)
-  2. Feasibility-first leader selection (alpha/beta/delta chosen from feasible pool)
-  3. Self-attention normalization (per-individual feature normalization prevents score collapse)
-  4. Stable quantum update (capped log term, bounded perturbation)
-  5. Eliminated redundant final re-evaluation (reuse archived Candidate objects directly)
-  6. Atlas-aware leader selection restored (topology weights enabled)
-  7. Adaptive blend decay tied to constraint ratio (faster exploitation when feasible)
-"""
+"""MOQGWO family runner with CDP feasibility + attention fusion + Atlas archive."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -44,14 +34,20 @@ from uav_benchmark.algorithms.nmopso import (
     select_leader_with_weights,
     AtlasConfig,
 )
+from uav_benchmark.algorithms.moqgwo.gpu_strict_ops import (
+    QGWOGPUStrictEngine,
+    evaluate_population_gpu_strict,
+    gpu_peak_bytes_for_device,
+    require_torch_gpu_for_moqgwo,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# QGWO Engine
+# GWO Engine
 # ─────────────────────────────────────────────────────────────────────
 
 class QGWO_Engine:
-    """Quantum Grey Wolf Optimizer Core with fixed attention and quantum step."""
+    """Grey Wolf Optimizer core with optional attention-guided leader fusion."""
 
     def __init__(
         self,
@@ -59,30 +55,14 @@ class QGWO_Engine:
         upper: np.ndarray,
         pop_size: int,
         use_attention: bool = True,
-        use_quantum: bool = True,
     ) -> None:
         self.lower    = lower
         self.upper    = upper
         self.dim      = lower.size
         self.pop_size = pop_size
         self.use_attention = bool(use_attention)
-        self.use_quantum = bool(use_quantum)
         self.positions = np.random.uniform(lower, upper, size=(pop_size, self.dim))
         self.leaders   = np.zeros((3, self.dim))
-        self._chaos_x  = 0.5
-        self._chaos_y  = 0.5
-
-    # -- Chaotic parameter adaptation -----------------------------------
-    def _zaslavskii_map(self) -> float:
-        v, mu, eps, r = 400.0, 3.0, 0.3, 3.0
-        self._chaos_x = (
-            self._chaos_x + v * (1 + mu * self._chaos_y)
-            + eps * v * mu * np.cos(2 * np.pi * self._chaos_x)
-        ) % 1.0
-        self._chaos_y = np.exp(-r) * (
-            self._chaos_y + eps * np.cos(2 * np.pi * self._chaos_x)
-        )
-        return float(self._chaos_x)
 
     # -- Self-Attention --------------------------------------------------
     def _self_attention(self, pos: np.ndarray, leaders: np.ndarray) -> np.ndarray:
@@ -108,21 +88,9 @@ class QGWO_Engine:
 
     # -- One generation step --------------------------------------------
     def step(self, generation: int, max_generations: int) -> np.ndarray:
-        """Vectorised A²-MOQGWO update with stabilised quantum collapse."""
-        chaos_val = self._zaslavskii_map()
-        a = 2.0 - generation * (2.0 / max_generations) + 0.1 * chaos_val
-
-        if self.use_attention:
-            # Attention-guided collapse centre — vectorised across population
-            m_best = np.stack([self._self_attention(self.positions[i], self.leaders)
-                               for i in range(self.pop_size)])
-        else:
-            # Ablation: QGWO without attention, use simple mean leader centroid.
-            mean_leader = np.mean(self.leaders, axis=0)
-            m_best = np.repeat(mean_leader[None, :], self.pop_size, axis=0)
-
-        # Quantum beta parameter
-        beta = np.random.uniform(0.5, 1.0, size=(self.pop_size, self.dim))
+        """Vectorised MOQGWO update with linear GWO and optional attention fusion."""
+        # Paper-standard GWO schedule: linear decay only.
+        a = 2.0 - generation * (2.0 / max_generations)
 
         # Standard GWO estimate from 3 leaders
         X_GWO = np.zeros_like(self.positions)
@@ -135,19 +103,14 @@ class QGWO_Engine:
             X_GWO += self.leaders[j] - A * D
         X_GWO /= 3.0
 
-        # Quantum collapse — log(1/u) capped to prevent runaway perturbation
-        u = np.clip(np.random.rand(self.pop_size, self.dim), 1e-8, 1.0)
-        log_term = np.minimum(-np.log(u), 5.0)   # cap at 5σ to prevent exploding jumps
-        sign = np.where(np.random.rand(self.pop_size, self.dim) > 0.5, 1.0, -1.0)
-        q_pos = m_best + sign * beta * np.abs(m_best - self.positions) * log_term
-
-        if self.use_quantum:
-            # Blend: early -> more quantum exploration; late -> more GWO exploitation
-            blend_chance = (max_generations - generation) / max_generations
-            mask = np.random.rand(self.pop_size, self.dim) < blend_chance
-            new_positions = np.where(mask, q_pos, X_GWO)
+        if self.use_attention:
+            # Attention-guided fusion of alpha/beta/delta attraction.
+            attn_center = np.stack([
+                self._self_attention(self.positions[i], self.leaders)
+                for i in range(self.pop_size)
+            ])
+            new_positions = 0.5 * X_GWO + 0.5 * attn_center
         else:
-            # Ablation: standard GWO core only (same wrapper/constraints/archive).
             new_positions = X_GWO
 
         # Sanitize and clip
@@ -195,6 +158,7 @@ def _update_archive(
     divisions: int,
     atlas_config: AtlasConfig,
     model: dict,
+    paper_standard: bool = False,
 ) -> tuple[list[Candidate], np.ndarray | None]:
     """Merge + prune archive using CDP + non-dominated sorting + Atlas truncation.
 
@@ -226,37 +190,72 @@ def _update_archive(
     feas_idx  = np.where(feas_mask)[0]
     feas_obj  = obj_all[feas_idx]
 
-    # ── Phase 2: Non-dominated sorting (front 1 only) ───────────────
+    if paper_standard:
+        # MOGWO foundation-paper behavior: keep non-dominated front only,
+        # then truncate by crowding grid (objective space only).
+        fronts, _ = n_d_sort(feas_obj.copy(), None, feas_idx.size)
+        front1 = feas_idx[fronts == 1]
+        if front1.size == 0:
+            front1 = feas_idx
+        if front1.size <= max_size:
+            kept = [all_cands[i] for i in front1]
+            kept_atlas = atlas_all[front1] if atlas_all is not None else None
+            return kept, kept_atlas
+        f1_obj = obj_all[front1]
+        grid, _, _ = _build_grid(f1_obj, divisions)
+        delete_mask = np.zeros(front1.size, dtype=bool)
+        while int((~delete_mask).sum()) > max_size:
+            active = np.where(~delete_mask)[0]
+            active_grid = grid[active]
+            kill_local = delete_one_with_weights(
+                active_grid, 10.0, 1.0, 0.0, None
+            )
+            delete_mask[active[kill_local]] = True
+        keep_global = front1[np.where(~delete_mask)[0]]
+        kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
+        return [all_cands[i] for i in keep_global], kept_atlas
+
+    # ── Phase 2: Non-dominated sorting (progressive fronts) ──────────
     fronts, _ = n_d_sort(feas_obj.copy(), None, feas_idx.size)
-    front1    = feas_idx[fronts == 1]
-    if front1.size == 0:
-        front1 = feas_idx  # fallback
+    selected: list[int] = []
+    rank = 1
+    while len(selected) < max_size:
+        local_front = np.where(fronts == rank)[0]
+        if local_front.size == 0:
+            break
+        global_front = feas_idx[local_front]
+        remaining = max_size - len(selected)
+        if global_front.size <= remaining:
+            selected.extend(global_front.tolist())
+            rank += 1
+            continue
 
-    if front1.size <= max_size:
-        kept = [all_cands[i] for i in front1]
-        kept_atlas = atlas_all[front1] if atlas_all is not None else None
-        return kept, kept_atlas
+        # ── Phase 3: Atlas truncation on partial front ──────────────
+        pool_global = np.concatenate([np.asarray(selected, dtype=int), global_front])
+        pool_obj = obj_all[pool_global]
+        pool_atl = atlas_all[pool_global] if atlas_all is not None else None
+        grid, _, _ = _build_grid(pool_obj, divisions)
 
-    # ── Phase 3: Atlas Truncation (oversize front 1) ─────────────────
-    f1_obj  = obj_all[front1]
-    f1_atl  = atlas_all[front1] if atlas_all is not None else None
-    grid, _, _ = _build_grid(f1_obj, divisions)
+        delete_mask = np.zeros(pool_global.size, dtype=bool)
+        while int((~delete_mask).sum()) > max_size:
+            active = np.where(~delete_mask)[0]
+            active_grid = grid[active]
+            active_atl = pool_atl[active] if pool_atl is not None else None
+            kill_local = delete_one_with_weights(
+                active_grid, 10.0,
+                atlas_config.objective_weight,
+                atlas_config.atlas_weight,
+                active_atl if atlas_config.enabled else None,
+            )
+            delete_mask[active[kill_local]] = True
 
-    delete_mask = np.zeros(front1.size, dtype=bool)
-    while int((~delete_mask).sum()) > max_size:
-        active     = np.where(~delete_mask)[0]
-        active_grid = grid[active]
-        active_atl  = f1_atl[active] if f1_atl is not None else None
-        kill_local  = delete_one_with_weights(
-            active_grid, 10.0,
-            atlas_config.objective_weight,
-            atlas_config.atlas_weight,
-            active_atl if atlas_config.enabled else None,
-        )
-        delete_mask[active[kill_local]] = True
+        keep_global = pool_global[np.where(~delete_mask)[0]]
+        kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
+        return [all_cands[i] for i in keep_global], kept_atlas
 
-    keep_local = np.where(~delete_mask)[0]
-    keep_global = front1[keep_local]
+    if not selected:
+        selected = feas_idx[: min(max_size, feas_idx.size)].tolist()
+    keep_global = np.asarray(selected[:max_size], dtype=int)
     kept_atlas = atlas_all[keep_global] if atlas_all is not None else None
     return [all_cands[i] for i in keep_global], kept_atlas
 
@@ -295,6 +294,7 @@ def _select_leaders(
     divisions: int,
     atlas_config: AtlasConfig,
     model: dict,
+    paper_standard: bool = False,
 ) -> np.ndarray:
     """Select 3 leaders (alpha, beta, delta) using CDP priority + atlas weights.
 
@@ -309,24 +309,28 @@ def _select_leaders(
     feas_mask = cv <= 0.0
     feas_idx  = np.where(feas_mask)[0]
 
-    if feas_idx.size >= 3:
-        pool_idx  = feas_idx
-    else:
-        pool_idx  = np.arange(n)  # fall back to all
+    pool_idx = feas_idx if feas_idx.size > 0 else np.arange(n)
 
     pool_obj  = np.stack([archive[i].objective for i in pool_idx])
     pool_atl  = atlas_indices[pool_idx] if atlas_indices is not None else None
     grid, _, _ = _build_grid(pool_obj, divisions)
 
     leaders = []
+    available_local = np.arange(pool_idx.size)
     for _ in range(3):
+        if available_local.size == 0:
+            available_local = np.arange(pool_idx.size)
+        active_grid = grid[available_local]
+        active_atl = pool_atl[available_local] if pool_atl is not None else None
         idx_in_pool = select_leader_with_weights(
-            grid, 10.0,
-            atlas_config.objective_weight,
-            atlas_config.atlas_weight,
-            pool_atl if atlas_config.enabled else None,
+            active_grid, 10.0,
+            1.0 if paper_standard else atlas_config.objective_weight,
+            0.0 if paper_standard else atlas_config.atlas_weight,
+            None if paper_standard else (active_atl if atlas_config.enabled else None),
         )
-        leaders.append(archive[pool_idx[idx_in_pool]].vector.copy())
+        chosen_local = available_local[idx_in_pool]
+        leaders.append(archive[pool_idx[chosen_local]].vector.copy())
+        available_local = available_local[available_local != chosen_local]
 
     return np.stack(leaders)  # shape (3, dim)
 
@@ -343,6 +347,8 @@ def _resolve_variant(raw: Any) -> str:
         return "no_attention"
     if key in {"standard_gwo", "standard-gwo", "gwo", "standard"}:
         return "standard_gwo"
+    if key in {"gpu_strict", "gpu-strict", "moqgwo-gpu-strict", "moqgwo_gpu_strict"}:
+        return "gpu_strict"
     return "full"
 
 
@@ -356,7 +362,7 @@ def _apply_variant(params: BenchmarkParams, *, variant: str | None = None, use_a
 
 
 def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    """A²-MOQGWO: Fixed, constraint-aware, topology-robust fleet runner."""
+    """MOQGWO family runner with CDP feasibility and Atlas-aware archive."""
     objective_count = 4
     model = dict(model)
     n_waypoints     = int(model.get("n", 10))
@@ -370,15 +376,23 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         separation_min=float(params.separation_min),
     )
     model["maxTurnDeg"]              = float(params.max_turn_deg)
-    # FIX #1: Use proper hard constraint evaluation (not is_rl=True bypass)
     model["is_rl"]                   = False
     model["hardCollisionConstraint"] = True
 
     lower, upper = _build_bounds(model, fleet_size=fleet_size, n_waypoints=n_waypoints)
     variant = _resolve_variant(params.extra.get("moqgwoVariant", "full"))
+    paper_standard = variant == "standard_gwo"
     use_atlas = bool(params.extra.get("moqgwoUseAtlas", True))
-    use_attention = variant != "no_attention"
-    use_quantum = variant != "standard_gwo"
+    use_gpu_strict = variant == "gpu_strict"
+    use_attention = (variant != "no_attention") and (not paper_standard)
+    if paper_standard:
+        # Keep paper-standard MOGWO untouched.
+        use_atlas = False
+    torch_module = None
+    gpu_device = None
+    gpu_backend = "numpy:cpu"
+    if use_gpu_strict:
+        torch_module, gpu_device, gpu_backend = require_torch_gpu_for_moqgwo(params.gpu_mode)
 
     archive_size   = int(params.extra.get("nRep", params.population))
     grid_divisions = int(params.extra.get("nGrid", 10))
@@ -420,64 +434,109 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 continue
 
         np.random.seed(seed_value * 1000 + run_idx)
+        if use_gpu_strict:
+            torch_module.manual_seed(seed_value * 1000 + run_idx)
+            if str(gpu_device).startswith("cuda"):
+                torch_module.cuda.reset_peak_memory_stats(gpu_device)
 
         # ── Initialise ────────────────────────────────────────────────
-        engine = QGWO_Engine(
-            lower,
-            upper,
-            params.population,
-            use_attention=use_attention,
-            use_quantum=use_quantum,
-        )
+        if use_gpu_strict:
+            engine = QGWOGPUStrictEngine(
+                lower,
+                upper,
+                params.population,
+                torch_module=torch_module,
+                device=gpu_device,
+                use_attention=use_attention,
+                use_quantum=False,
+            )
+        else:
+            engine = QGWO_Engine(
+                lower,
+                upper,
+                params.population,
+                use_attention=use_attention,
+            )
         hv_hist = (np.zeros((params.generations, 2), dtype=float)
                    if params.compute_metrics else np.zeros((0, 2), dtype=float))
+        run_gpu_peak_bytes = 0.0
 
         # Initial evaluation
-        init_cands  = _evaluate_population(
-            engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
-        )
+        if use_gpu_strict:
+            init_cands = evaluate_population_gpu_strict(
+                engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints,
+                torch_module=torch_module, device=gpu_device,
+            )
+            run_gpu_peak_bytes = max(run_gpu_peak_bytes, gpu_peak_bytes_for_device(torch_module, gpu_device))
+        else:
+            init_cands = _evaluate_population(
+                engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
         init_atlas = _atlas_for_candidates(init_cands, model, atlas_config) if atlas_config.enabled else None
 
         archive: list[Candidate] = []
         arc_atlas: np.ndarray | None = np.zeros(0, dtype=int) if atlas_config.enabled else None
+        active_atlas_config = atlas_config
 
         # Bootstrap archive
         archive, arc_atlas = _update_archive(
             [], init_cands, init_atlas,
-            archive_size, grid_divisions, atlas_config, model,
+            archive_size, grid_divisions, active_atlas_config, model,
+            paper_standard=paper_standard,
         )
 
         # Set initial leaders from archive
         if archive:
-            engine.leaders = _select_leaders(archive, arc_atlas, grid_divisions, atlas_config, model)
+            selected_leaders = _select_leaders(
+                archive, arc_atlas, grid_divisions, active_atlas_config, model,
+                paper_standard=paper_standard,
+            )
+            if use_gpu_strict:
+                engine.set_leaders(selected_leaders)
+            else:
+                engine.leaders = selected_leaders
 
         # ── Generation Loop ───────────────────────────────────────────
         for gen in range(1, params.generations + 1):
-
             # Update positions
             new_positions = engine.step(gen, params.generations)
 
             # Evaluate new population
-            new_cands = _evaluate_population(
-                new_positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            if use_gpu_strict:
+                new_cands = evaluate_population_gpu_strict(
+                    new_positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints,
+                    torch_module=torch_module, device=gpu_device,
+                )
+                run_gpu_peak_bytes = max(run_gpu_peak_bytes, gpu_peak_bytes_for_device(torch_module, gpu_device))
+            else:
+                new_cands = _evaluate_population(
+                    new_positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+                )
+            new_atlas = (
+                _atlas_for_candidates(new_cands, model, active_atlas_config)
+                if active_atlas_config.enabled
+                else None
             )
-            new_atlas = _atlas_for_candidates(new_cands, model, atlas_config) if atlas_config.enabled else None
 
             # Archive update (CDP-aware)
-            # FIX #5: Combine archive+new atlas arrays for the update call
             combined_atlas = None
             if arc_atlas is not None and new_atlas is not None:
                 combined_atlas = np.concatenate([arc_atlas, new_atlas])
             archive, arc_atlas = _update_archive(
                 archive, new_cands, combined_atlas,
-                archive_size, grid_divisions, atlas_config, model,
+                archive_size, grid_divisions, active_atlas_config, model,
+                paper_standard=paper_standard,
             )
 
-            # FIX #3/#6: Leader selection from feasible pool with atlas weights
             if archive:
-                engine.leaders = _select_leaders(
-                    archive, arc_atlas, grid_divisions, atlas_config, model
+                selected_leaders = _select_leaders(
+                    archive, arc_atlas, grid_divisions, active_atlas_config, model,
+                    paper_standard=paper_standard,
                 )
+                if use_gpu_strict:
+                    engine.set_leaders(selected_leaders)
+                else:
+                    engine.leaders = selected_leaders
 
             # Metrics
             if params.compute_metrics and hv_hist.shape[0] > 0:
@@ -494,12 +553,17 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         if params.compute_metrics and hv_hist.shape[0] > 0:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_hist})
 
-        # FIX #4: Use existing Candidate objects directly — no extra re-evaluation
         if not archive:
             # Pathological fallback
-            last_cands = _evaluate_population(
-                engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
-            )
+            if use_gpu_strict:
+                last_cands = evaluate_population_gpu_strict(
+                    engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints,
+                    torch_module=torch_module, device=gpu_device,
+                )
+            else:
+                last_cands = _evaluate_population(
+                    engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+                )
             archive = sorted(last_cands, key=lambda c: _constraint_violation(c, model))[:archive_size]
 
         _save_fleet_artifacts(
@@ -508,10 +572,10 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
             problem_index=params.problem_index,
             objective_count=objective_count,
             runtime_sec=float(time.perf_counter() - run_start),
-            gpu_backend="numpy:cpu",
-            gpu_peak_bytes=0.0,
+            gpu_backend=gpu_backend if use_gpu_strict else "numpy:cpu",
+            gpu_peak_bytes=float(run_gpu_peak_bytes if use_gpu_strict else 0.0),
             run_metadata={
-                "algorithmName": "MOQGWO",
+                "algorithmName": "MOQGWO-GPU-STRICT" if use_gpu_strict else "MOQGWO",
                 "representation": "cart",
                 "moqgwoVariant": str(variant),
                 "moqgwoUseAtlas": float(1.0 if atlas_config.enabled else 0.0),
@@ -543,3 +607,7 @@ def run_fleet_moqgwo_no_atlas(model: dict[str, Any], params: BenchmarkParams) ->
 
 def run_fleet_moqgwo_standard_gwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     return run_fleet_moqgwo(model, _apply_variant(params, variant="standard_gwo"))
+
+
+def run_fleet_moqgwo_gpu_strict(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+    return run_fleet_moqgwo(model, _apply_variant(params, variant="gpu_strict"))
