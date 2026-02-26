@@ -258,52 +258,12 @@ def _gpu_velocity_update(
     repulsion_weight: float = 0.0,
     safe_distance: float = 10.0,
 ) -> tuple[np.ndarray, np.ndarray, str]:
-    """PSO velocity + position update, optionally GPU-accelerated."""
+    """PSO velocity + position update (CPU-only legacy path)."""
     n, d = population.shape
     r1 = np.random.rand(n, d)
     r2 = np.random.rand(n, d)
 
     backend = "numpy:cpu"
-    use_gpu = gpu_mode not in {"off", "none", "cpu", ""}
-
-    if use_gpu:
-        try:
-            from uav_benchmark.core.gpu_utils import resolve_gpu
-            gpu_info = resolve_gpu(gpu_mode)
-            if gpu_info.enabled and gpu_info.backend == "torch":
-                import torch
-                dev = torch.device(gpu_info.device)
-                t_pop = torch.as_tensor(population, dtype=torch.float32, device=dev)
-                t_vel = torch.as_tensor(velocity, dtype=torch.float32, device=dev)
-                t_pb = torch.as_tensor(pbest, dtype=torch.float32, device=dev)
-                t_lead = torch.as_tensor(leaders, dtype=torch.float32, device=dev)
-                t_r1 = torch.as_tensor(r1, dtype=torch.float32, device=dev)
-                t_r2 = torch.as_tensor(r2, dtype=torch.float32, device=dev)
-                t_lo = torch.as_tensor(lower, dtype=torch.float32, device=dev)
-                t_up = torch.as_tensor(upper, dtype=torch.float32, device=dev)
-
-                t_vel = inertia * t_vel + c1 * t_r1 * (t_pb - t_pop) + c2 * t_r2 * (t_lead - t_pop)
-
-                if fleet_size > 1 and repulsion_weight > 0.0:
-                    uav_d = d // fleet_size
-                    t_pop_multi = t_pop.view(n, fleet_size, uav_d)
-                    t_sum = t_pop_multi.sum(dim=1, keepdim=True)
-                    t_centroid_others = (t_sum - t_pop_multi) / (fleet_size - 1)
-                    t_R = t_pop_multi - t_centroid_others
-                    t_R = t_R.view(n, d)
-                    t_r3 = torch.rand(n, d, dtype=torch.float32, device=dev)
-                    t_vel = t_vel + repulsion_weight * t_r3 * t_R
-
-                if velocity_limit is not None:
-                    t_vlim = torch.as_tensor(velocity_limit, dtype=torch.float32, device=dev)
-                    t_vel = torch.clamp(t_vel, -t_vlim, t_vlim)
-                t_pop = torch.clamp(t_pop + t_vel, t_lo, t_up)
-                population = t_pop.cpu().numpy()
-                velocity = t_vel.cpu().numpy()
-                backend = f"torch:{gpu_info.device}"
-                return population, velocity, backend
-        except Exception:
-            pass
 
     new_vel = inertia * velocity + c1 * r1 * (pbest - population) + c2 * r2 * (leaders - population)
     
