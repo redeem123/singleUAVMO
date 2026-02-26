@@ -32,6 +32,7 @@ from uav_benchmark.algorithms import (
     run_fleet_moqgwo_no_attention,
     run_fleet_moqgwo_no_atlas,
     run_fleet_moqgwo_standard_gwo,
+    run_fleet_moqgwo_gpu_strict,
     run_fleet_apex_shade,
     run_tskac_nsga2,
 )
@@ -63,6 +64,7 @@ _RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
     "MOQGWO-NO-ATTENTION": run_fleet_moqgwo_no_attention,
     "MOQGWO-NO-ATLAS": run_fleet_moqgwo_no_atlas,
     "MOQGWO-STANDARD-GWO": run_fleet_moqgwo_standard_gwo,
+    "MOQGWO-GPU-STRICT": run_fleet_moqgwo_gpu_strict,
     "APEX-SHADE": run_fleet_apex_shade,
     "TSKAC-NSGA-II": run_tskac_nsga2,
 }
@@ -84,6 +86,7 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "MOQGWO-NO-ATTENTION": 89,
     "MOQGWO-NO-ATLAS": 101,
     "MOQGWO-STANDARD-GWO": 103,
+    "MOQGWO-GPU-STRICT": 109,
     "APEX-SHADE": 97,
     "TSKAC-NSGA-II": 107,
 }
@@ -104,8 +107,13 @@ def _next_dispatchable_task(
     pending_by_task: list[list[int]],
     active_by_task: list[int],
     limit_by_task: list[int],
+    start_index: int = 0,
 ) -> int | None:
-    for task_index in range(len(pending_by_task)):
+    n_tasks = len(pending_by_task)
+    if n_tasks <= 0:
+        return None
+    for offset in range(n_tasks):
+        task_index = (int(start_index) + offset) % n_tasks
         if pending_by_task[task_index] and active_by_task[task_index] < limit_by_task[task_index]:
             return task_index
     return None
@@ -313,6 +321,16 @@ def _normalize_algorithm_name(name: str) -> str:
         "a2-moqgwo-standard-gwo",
     }:
         return "MOQGWO-STANDARD-GWO"
+    if key in {
+        "moqgwo-gpu-strict",
+        "moqgwo_gpu_strict",
+        "a2moqgwo-gpu-strict",
+        "a2moqgwo_gpu_strict",
+        "a2-moqgwo-gpu-strict",
+        "gpu-strict-moqgwo",
+        "gpu_strict_moqgwo",
+    }:
+        return "MOQGWO-GPU-STRICT"
     if key in {"apex-shade", "apexshade", "apex_shade"}:
         return "APEX-SHADE"
     if key in {
@@ -384,6 +402,7 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
         "MOQGWO-NO-ATTENTION",
         "MOQGWO-NO-ATLAS",
         "MOQGWO-STANDARD-GWO",
+        "MOQGWO-GPU-STRICT",
         "APEX-SHADE",
         "TSKAC-NSGA-II",
     ]
@@ -596,6 +615,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         )
 
     in_flight: list[tuple[multiprocessing.pool.AsyncResult, int, int]] = []
+    dispatch_cursor = 0
     with multiprocessing.Pool(processes=n_workers) as pool:
         while True:
             while len(in_flight) < n_workers:
@@ -603,6 +623,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
                     pending_by_task=task_pending_runs,
                     active_by_task=task_active_runs,
                     limit_by_task=task_run_limit,
+                    start_index=dispatch_cursor,
                 )
                 if dispatch_task_index is None:
                     break
@@ -614,6 +635,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
                 )
                 task_active_runs[dispatch_task_index] += 1
                 in_flight.append((result, dispatch_task_index, run_index))
+                dispatch_cursor = (dispatch_task_index + 1) % max(1, len(tasks))
 
             if not in_flight:
                 break
