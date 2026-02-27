@@ -19,6 +19,7 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
 from uav_benchmark.algorithms.shared.pso_types import Candidate
+from uav_benchmark.core.mission_encoding import decision_to_paths
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort
 from uav_benchmark.io.matlab import save_mat
@@ -38,12 +39,389 @@ from uav_benchmark.algorithms.moqgwo.gpu_strict_ops import (
 )
 
 
+_ATTN_TAU_OBJ = 0.20
+_ATTN_TAU_ATLAS = 0.35
+_ATTN_SAFE_GAIN = 0.55
+_ATTN_ATLAS_GAIN = 0.30
+_ATTN_BLEND_EPS = 0.03
+_ATTN_ROW_DEGENERATE_EPS = 1e-6
+_ATTN_EPS = 1e-12
+_ATLAS_BIN_MULT = 1000
+_RTCS_SAFE_RATIO = 0.40
+_RTCS_BALANCED_RATIO = 0.40
+_RTCS_CORRECT_RATIO = 0.15
+_RTCS_ALTITUDE_GAIN = 0.12
+
+
+def _fit_matrix(values: np.ndarray, rows: int, cols: int, fill: float) -> np.ndarray:
+    out = np.full((rows, cols), float(fill), dtype=float)
+    raw = np.asarray(values, dtype=float)
+    if raw.size == 0:
+        return out
+    raw = raw.reshape(-1, cols) if raw.ndim != 2 else raw
+    if raw.shape[1] != cols:
+        return out
+    use = min(rows, raw.shape[0])
+    out[:use] = raw[:use]
+    return out
+
+
+def _fit_vector(values: np.ndarray, rows: int, fill: float) -> np.ndarray:
+    out = np.full(rows, float(fill), dtype=float)
+    raw = np.asarray(values, dtype=float).reshape(-1)
+    if raw.size == 0:
+        return out
+    use = min(rows, raw.size)
+    out[:use] = raw[:use]
+    return out
+
+
+def _fit_int_vector(values: np.ndarray, rows: int, fill: int) -> np.ndarray:
+    out = np.full(rows, int(fill), dtype=int)
+    raw = np.asarray(values, dtype=int).reshape(-1)
+    if raw.size == 0:
+        return out
+    use = min(rows, raw.size)
+    out[:use] = raw[:use]
+    return out
+
+
+def _rtcs_obstacle_discs(model: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    centers: list[np.ndarray] = []
+    radii: list[np.ndarray] = []
+    threats = model.get("threats")
+    if threats is not None:
+        threat_arr = np.asarray(threats, dtype=float)
+        if threat_arr.ndim == 2 and threat_arr.shape[1] >= 4 and threat_arr.shape[0] > 0:
+            centers.append(threat_arr[:, :2])
+            radii.append(np.maximum(0.0, threat_arr[:, 3]))
+    nofly_c = model.get("nofly_c")
+    nofly_r = model.get("nofly_r")
+    if nofly_c is not None and nofly_r is not None:
+        c = np.asarray(nofly_c, dtype=float)
+        if c.ndim == 1:
+            c = c.reshape(1, -1)
+        if c.ndim == 2 and c.shape[1] >= 2 and c.shape[0] > 0:
+            c = c[:, :2]
+            r = np.asarray(nofly_r, dtype=float).reshape(-1)
+            if r.size == 1:
+                r = np.repeat(r, c.shape[0])
+            elif r.size < c.shape[0]:
+                r = np.pad(r, (0, c.shape[0] - r.size), mode="edge")
+            centers.append(c)
+            radii.append(np.maximum(0.0, r[: c.shape[0]]))
+    if not centers:
+        return np.zeros((0, 2), dtype=float), np.zeros(0, dtype=float)
+    return np.vstack(centers), np.concatenate(radii)
+
+
+def _rtcs_point_clearance(
+    points: np.ndarray,
+    *,
+    model: dict[str, Any],
+    obs_centers: np.ndarray,
+    obs_radii: np.ndarray,
+) -> np.ndarray:
+    if points.size == 0:
+        return np.zeros(0, dtype=float)
+    x = points[:, 0]
+    y = points[:, 1]
+    z_abs = points[:, 2]
+    xmax = int(float(model.get("xmax", 1)))
+    ymax = int(float(model.get("ymax", 1)))
+    x_idx = np.clip(np.rint(x).astype(int), 1, max(1, xmax)) - 1
+    y_idx = np.clip(np.rint(y).astype(int), 1, max(1, ymax)) - 1
+    ground = np.asarray(model["H"], dtype=float)[y_idx, x_idx]
+    z_rel = z_abs - ground
+    clearance = z_rel
+    if obs_centers.size > 0:
+        dx = x[:, None] - obs_centers[None, :, 0]
+        dy = y[:, None] - obs_centers[None, :, 1]
+        dist = np.sqrt(np.maximum(0.0, dx * dx + dy * dy)) - obs_radii[None, :]
+        min_obs = np.min(dist, axis=1)
+        clearance = np.minimum(clearance, min_obs)
+    return clearance
+
+
+def _rtcs_path_shape_features(path: np.ndarray) -> tuple[float, float]:
+    if path.ndim != 2 or path.shape[0] < 2:
+        return 1.0, 1.0
+    seg = np.diff(path, axis=0)
+    seg_len = np.linalg.norm(seg, axis=1)
+    total = float(np.sum(seg_len))
+    straight = float(np.linalg.norm(path[-1] - path[0]))
+    if straight <= _ATTN_EPS or total <= _ATTN_EPS:
+        len_proxy = 1.0
+    else:
+        len_proxy = float(np.clip((total / straight - 1.0) / 2.0, 0.0, 1.0))
+    if path.shape[0] < 3:
+        return len_proxy, 0.0
+    v1 = path[1:-1] - path[:-2]
+    v2 = path[2:] - path[1:-1]
+    n1 = np.linalg.norm(v1, axis=1)
+    n2 = np.linalg.norm(v2, axis=1)
+    valid = (n1 > _ATTN_EPS) & (n2 > _ATTN_EPS)
+    if not np.any(valid):
+        return len_proxy, 0.0
+    cross = np.linalg.norm(np.cross(v1[valid], v2[valid]), axis=1)
+    dots = np.sum(v1[valid] * v2[valid], axis=1)
+    angles = np.abs(np.arctan2(cross, dots))
+    turn_proxy = float(np.clip(np.mean(angles) / np.pi, 0.0, 1.0))
+    return len_proxy, turn_proxy
+
+
+def _rtcs_surrogate_features(
+    population: np.ndarray,
+    *,
+    model: dict[str, Any],
+    fleet_size: int,
+    n_waypoints: int,
+    separation_min: float,
+    atlas_config: AtlasConfig,
+    use_topology: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_pop = population.shape[0]
+    quality = np.zeros(n_pop, dtype=float)
+    top_bins = np.zeros(n_pop, dtype=int)
+    severity = np.ones(n_pop, dtype=float)
+    obs_centers, obs_radii = _rtcs_obstacle_discs(model)
+    drone_size = float(model.get("droneSize", 1.0))
+    safe_dist = float(model.get("safeDist", 10.0))
+
+    for idx in range(n_pop):
+        vector = np.asarray(population[idx], dtype=float).reshape(-1)
+        try:
+            paths = decision_to_paths(vector, model=model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+        except Exception:
+            quality[idx] = 0.0
+            top_bins[idx] = 0
+            severity[idx] = 3.0
+            continue
+
+        min_clear = float("inf")
+        min_sep = float("inf")
+        len_vals: list[float] = []
+        turn_vals: list[float] = []
+        sigs: list[np.ndarray] = []
+        for path in paths:
+            p = np.asarray(path, dtype=float)
+            sigs.append(topology_signature(p, model, atlas_config.max_obstacles))
+            len_proxy, turn_proxy = _rtcs_path_shape_features(p)
+            len_vals.append(len_proxy)
+            turn_vals.append(turn_proxy)
+            point_clear = _rtcs_point_clearance(
+                p,
+                model=model,
+                obs_centers=obs_centers,
+                obs_radii=obs_radii,
+            )
+            if p.shape[0] > 1:
+                mids = 0.5 * (p[:-1] + p[1:])
+                mid_clear = _rtcs_point_clearance(
+                    mids,
+                    model=model,
+                    obs_centers=obs_centers,
+                    obs_radii=obs_radii,
+                )
+                if mid_clear.size > 0:
+                    point_clear = np.concatenate([point_clear, mid_clear])
+            if point_clear.size > 0:
+                min_clear = min(min_clear, float(np.min(point_clear)))
+
+        if len(paths) > 1:
+            ref = np.stack([np.asarray(path, dtype=float) for path in paths], axis=0)
+            for i in range(ref.shape[0]):
+                for j in range(i + 1, ref.shape[0]):
+                    dist = np.linalg.norm(ref[i] - ref[j], axis=1)
+                    if dist.size > 0:
+                        min_sep = min(min_sep, float(np.min(dist)))
+
+        if not np.isfinite(min_clear):
+            min_clear = -safe_dist
+        if not np.isfinite(min_sep):
+            min_sep = 0.0
+        clearance_def = max(0.0, drone_size - min_clear) / max(drone_size, _ATTN_EPS)
+        safe_def = max(0.0, safe_dist - min_clear) / max(safe_dist, _ATTN_EPS)
+        sep_def = max(0.0, separation_min - min_sep) / max(separation_min, _ATTN_EPS)
+        clr_term = 1.0 / (1.0 + clearance_def + 0.5 * safe_def)
+        sep_term = 1.0 / (1.0 + 2.0 * sep_def)
+        len_proxy = float(np.mean(len_vals)) if len_vals else 1.0
+        turn_proxy = float(np.mean(turn_vals)) if turn_vals else 1.0
+        q = 0.45 * clr_term + 0.25 * sep_term + 0.20 * (1.0 - len_proxy) + 0.10 * (1.0 - turn_proxy)
+        quality[idx] = float(np.clip(q, 0.0, 1.0))
+        severity[idx] = float(np.clip(clearance_def + sep_def + 0.5 * len_proxy + 0.5 * turn_proxy, 0.0, 4.0))
+
+        if use_topology and atlas_config.enabled and sigs:
+            avg_sig = np.mean(np.stack(sigs, axis=0), axis=0)
+            top_bins[idx] = int(topology_bin_from_signature(avg_sig, atlas_config))
+        else:
+            top_bins[idx] = 0
+    return quality, top_bins, severity
+
+
+def _rtcs_select_indices(
+    quality: np.ndarray,
+    top_bins: np.ndarray,
+    *,
+    use_topology: bool,
+) -> np.ndarray:
+    n = int(quality.size)
+    if n <= 0:
+        return np.zeros(0, dtype=int)
+    n_safe = int(round(_RTCS_SAFE_RATIO * n))
+    n_bal = int(round(_RTCS_BALANCED_RATIO * n))
+    n_safe = int(np.clip(n_safe, 1, n))
+    n_bal = int(np.clip(n_bal, 0, n - n_safe))
+    n_exp = n - n_safe - n_bal
+
+    order_desc = np.argsort(-quality, kind="stable")
+    chosen = np.zeros(n, dtype=bool)
+    safe_idx = order_desc[:n_safe]
+    chosen[safe_idx] = True
+
+    balanced: list[int] = []
+    remaining = np.where(~chosen)[0]
+    if n_bal > 0:
+        if use_topology and remaining.size > 0:
+            per_bin: dict[int, list[int]] = {}
+            rem_order = remaining[np.argsort(-quality[remaining], kind="stable")]
+            for idx in rem_order:
+                key = int(top_bins[idx])
+                per_bin.setdefault(key, []).append(int(idx))
+            while len(balanced) < n_bal:
+                progressed = False
+                for key in sorted(per_bin):
+                    bucket = per_bin[key]
+                    if not bucket:
+                        continue
+                    pick = bucket.pop(0)
+                    if not chosen[pick]:
+                        balanced.append(pick)
+                        chosen[pick] = True
+                        progressed = True
+                        if len(balanced) >= n_bal:
+                            break
+                if not progressed:
+                    break
+        if len(balanced) < n_bal:
+            fill_candidates = np.where(~chosen)[0]
+            fill = fill_candidates[np.argsort(-quality[fill_candidates], kind="stable")][: n_bal - len(balanced)]
+            for idx in fill:
+                balanced.append(int(idx))
+                chosen[int(idx)] = True
+
+    exploratory: list[int] = []
+    if n_exp > 0:
+        rem = np.where(~chosen)[0]
+        if rem.size > 0:
+            picks = rem[np.random.permutation(rem.size)[:n_exp]]
+            for idx in picks:
+                exploratory.append(int(idx))
+                chosen[int(idx)] = True
+    if np.sum(chosen) < n:
+        tail = np.where(~chosen)[0]
+        for idx in tail:
+            exploratory.append(int(idx))
+            chosen[int(idx)] = True
+    merged = np.concatenate([
+        np.asarray(safe_idx, dtype=int),
+        np.asarray(balanced, dtype=int),
+        np.asarray(exploratory, dtype=int),
+    ])
+    if merged.size != n:
+        merged = np.arange(n, dtype=int)
+    return merged
+
+
+def _rtcs_apply_correction(
+    population: np.ndarray,
+    severity: np.ndarray,
+    *,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    fleet_size: int,
+    n_waypoints: int,
+    correction_weight: np.ndarray | None = None,
+) -> np.ndarray:
+    if population.size == 0:
+        return population
+    out = np.asarray(population, dtype=float).copy()
+    n = out.shape[0]
+    weight = np.ones(n, dtype=float)
+    if correction_weight is not None:
+        raw_weight = np.asarray(correction_weight, dtype=float).reshape(-1)
+        use = min(n, raw_weight.size)
+        weight[:use] = raw_weight[:use]
+    weight = np.clip(weight, 0.10, 1.00)
+    k = int(np.clip(np.ceil(_RTCS_CORRECT_RATIO * n), 1, n))
+    priority = np.asarray(severity, dtype=float).reshape(-1)[:n] * weight
+    pick = np.argsort(-priority, kind="stable")[:k]
+    low_block = np.asarray(lower, dtype=float).reshape(fleet_size, n_waypoints, 3)
+    up_block = np.asarray(upper, dtype=float).reshape(fleet_size, n_waypoints, 3)
+    z_span = np.maximum(0.0, up_block[:, :, 2] - low_block[:, :, 2])
+    for idx in pick:
+        block = out[int(idx)].reshape(fleet_size, n_waypoints, 3).copy()
+        gain = _RTCS_ALTITUDE_GAIN * float(np.clip(severity[int(idx)] / 2.0, 0.0, 1.0)) * float(weight[int(idx)])
+        block[:, :, 2] = block[:, :, 2] + gain * z_span
+        block = np.clip(block, low_block, up_block)
+        out[int(idx)] = block.reshape(-1)
+    return np.clip(out, lower, upper)
+
+
+def _rtcs_initialize_population(
+    population: np.ndarray,
+    *,
+    model: dict[str, Any],
+    fleet_size: int,
+    n_waypoints: int,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    separation_min: float,
+    atlas_config: AtlasConfig,
+    use_topology: bool,
+) -> np.ndarray:
+    pop = np.asarray(population, dtype=float)
+    if pop.ndim != 2 or pop.shape[0] <= 0:
+        return pop
+    quality, top_bins, severity = _rtcs_surrogate_features(
+        pop,
+        model=model,
+        fleet_size=fleet_size,
+        n_waypoints=n_waypoints,
+        separation_min=separation_min,
+        atlas_config=atlas_config,
+        use_topology=bool(use_topology),
+    )
+    order = _rtcs_select_indices(quality, top_bins, use_topology=bool(use_topology))
+    n = pop.shape[0]
+    n_safe = int(round(_RTCS_SAFE_RATIO * n))
+    n_bal = int(round(_RTCS_BALANCED_RATIO * n))
+    n_safe = int(np.clip(n_safe, 1, n))
+    n_bal = int(np.clip(n_bal, 0, n - n_safe))
+    correction_weight = np.ones(n, dtype=float)
+    if order.size == n:
+        safe_idx = order[:n_safe]
+        bal_idx = order[n_safe : n_safe + n_bal]
+        correction_weight[safe_idx] = 0.35
+        correction_weight[bal_idx] = 0.70
+    seeded = _rtcs_apply_correction(
+        pop,
+        severity,
+        lower=lower,
+        upper=upper,
+        fleet_size=fleet_size,
+        n_waypoints=n_waypoints,
+        correction_weight=correction_weight,
+    )
+    return np.clip(seeded, lower, upper)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # GWO Engine
 # ─────────────────────────────────────────────────────────────────────
 
 class QGWO_Engine:
-    """Grey Wolf Optimizer core with optional attention-guided leader fusion."""
+    """Grey Wolf Optimizer core with objective/atlas conditioned attention."""
 
     def __init__(
         self,
@@ -59,16 +437,175 @@ class QGWO_Engine:
         self.use_attention = bool(use_attention)
         self.positions = np.random.uniform(lower, upper, size=(pop_size, self.dim))
         self.leaders   = np.zeros((3, self.dim))
+        self._wolf_objectives = np.zeros((self.pop_size, 4), dtype=float)
+        self._wolf_risk = np.zeros(self.pop_size, dtype=float)
+        self._wolf_topology = np.zeros(self.pop_size, dtype=int)
+        self._wolf_robust = np.ones(self.pop_size, dtype=int)
+        self._leader_objectives = np.zeros((3, 4), dtype=float)
+        self._leader_risk = np.zeros(3, dtype=float)
+        self._leader_topology = np.zeros(3, dtype=int)
+        self._leader_robust = np.ones(3, dtype=int)
+        self._feasibility_pressure = 0.0
+        self._atlas_enabled = False
+        self._atlas_robust_bins = 2
+        self.last_attention_stats: dict[str, float] = {
+            "entropy_mean": 0.0,
+            "lambda_safe": 0.0,
+            "lambda_atlas": 0.0,
+        }
 
-    # -- Attention -------------------------------------------------------
-    def _attention_weights(self, pos: np.ndarray, leaders: np.ndarray) -> np.ndarray:
-        """Return softmax weights over (alpha, beta, delta) for one wolf."""
-        pos_norm = pos / (np.linalg.norm(pos) + 1e-12)
-        leader_norms = leaders / (np.linalg.norm(leaders, axis=1, keepdims=True) + 1e-12)
-        scores = leader_norms @ pos_norm
-        scores = scores - np.max(scores)
-        weights = np.exp(scores)
-        return weights / (weights.sum() + 1e-12)
+    def set_attention_context(
+        self,
+        *,
+        wolf_objectives: np.ndarray,
+        wolf_risk: np.ndarray,
+        feasibility_pressure: float,
+        leader_objectives: np.ndarray,
+        leader_risk: np.ndarray,
+        wolf_topology: np.ndarray | None = None,
+        wolf_robust: np.ndarray | None = None,
+        leader_topology: np.ndarray | None = None,
+        leader_robust: np.ndarray | None = None,
+        atlas_enabled: bool = False,
+        atlas_robust_bins: int = 2,
+    ) -> None:
+        self._wolf_objectives = np.clip(_fit_matrix(wolf_objectives, self.pop_size, 4, fill=1.0), 0.0, 1.0)
+        self._wolf_risk = np.maximum(0.0, _fit_vector(wolf_risk, self.pop_size, fill=1.0))
+        self._leader_objectives = np.clip(_fit_matrix(leader_objectives, 3, 4, fill=1.0), 0.0, 1.0)
+        self._leader_risk = np.maximum(0.0, _fit_vector(leader_risk, 3, fill=1.0))
+        self._feasibility_pressure = float(np.clip(feasibility_pressure, 0.0, 1.0))
+        self._atlas_enabled = bool(atlas_enabled)
+        self._atlas_robust_bins = max(2, int(atlas_robust_bins))
+        self._wolf_topology = _fit_int_vector(
+            np.asarray(wolf_topology if wolf_topology is not None else np.zeros(0, dtype=int), dtype=int),
+            self.pop_size,
+            fill=0,
+        )
+        self._wolf_robust = np.maximum(
+            1,
+            _fit_int_vector(
+                np.asarray(wolf_robust if wolf_robust is not None else np.ones(0, dtype=int), dtype=int),
+                self.pop_size,
+                fill=1,
+            ),
+        )
+        self._leader_topology = _fit_int_vector(
+            np.asarray(leader_topology if leader_topology is not None else np.zeros(0, dtype=int), dtype=int),
+            3,
+            fill=0,
+        )
+        self._leader_robust = np.maximum(
+            1,
+            _fit_int_vector(
+                np.asarray(leader_robust if leader_robust is not None else np.ones(0, dtype=int), dtype=int),
+                3,
+                fill=1,
+            ),
+        )
+
+    @staticmethod
+    def _normalize_channel_rows(scores: np.ndarray) -> np.ndarray:
+        scores = np.asarray(scores, dtype=float)
+        if scores.ndim != 2:
+            return np.zeros((0, 0), dtype=float)
+        mean = np.mean(scores, axis=1, keepdims=True)
+        std = np.std(scores, axis=1, keepdims=True)
+        centered = scores - mean
+        good = std > _ATTN_EPS
+        out = np.zeros_like(scores)
+        if np.any(good):
+            out = np.divide(centered, np.where(good, std, 1.0))
+        return out
+
+    def _attention_weights(self) -> np.ndarray:
+        p = float(np.clip(self._feasibility_pressure, 0.0, 1.0))
+        w2 = 0.25 + 0.30 * p
+        w_other = (1.0 - w2) / 3.0
+        objective_weights = np.asarray([w_other, w2, w_other, w_other], dtype=float).reshape(1, 1, 4)
+
+        diff = np.abs(self._wolf_objectives[:, None, :] - self._leader_objectives[None, :, :])
+        score_obj = -np.sum(objective_weights * diff, axis=2) / _ATTN_TAU_OBJ
+        score_obj = self._normalize_channel_rows(score_obj)
+
+        leader_risk = np.maximum(0.0, np.asarray(self._leader_risk, dtype=float).reshape(3))
+        risk_min = float(np.min(leader_risk))
+        risk_max = float(np.max(leader_risk))
+        risk_span = risk_max - risk_min
+        if risk_span > _ATTN_EPS:
+            safe_pref = 1.0 - ((leader_risk - risk_min) / risk_span)
+            rank = np.empty(3, dtype=float)
+            rank[np.argsort(leader_risk, kind="stable")] = np.arange(3, dtype=float)
+            rank_pref = (2.0 - rank) / 2.0  # safest leader gets 1.0
+            safe_pref = 0.75 * safe_pref + 0.25 * rank_pref
+        else:
+            j2 = np.clip(self._leader_objectives[:, 1], 0.0, 1.0)
+            j2_min = float(np.min(j2))
+            j2_span = float(np.max(j2) - j2_min)
+            if j2_span > _ATTN_EPS:
+                safe_pref = 1.0 - ((j2 - j2_min) / j2_span)
+            else:
+                safe_pref = np.zeros(3, dtype=float)
+        safe_pref = safe_pref - float(np.mean(safe_pref))
+        wolf_risk = np.maximum(0.0, np.asarray(self._wolf_risk, dtype=float).reshape(-1))
+        wolf_scale = wolf_risk / (wolf_risk + 1.0)
+        safe_scale = 0.25 + 0.75 * (0.60 * p + 0.40 * wolf_scale)
+        score_safe = safe_scale[:, None] * safe_pref.reshape(1, 3)
+        score_safe = self._normalize_channel_rows(score_safe)
+
+        risk_span_scale = risk_span / (risk_span + 1.0)
+        lambda_safe = 0.28 + 0.55 * p * (0.5 + 0.5 * risk_span_scale)
+        lambda_safe = float(np.clip(lambda_safe, 0.28, 0.82))
+        if self._atlas_enabled:
+            lambda_atlas = _ATTN_ATLAS_GAIN * (1.0 - p) + 0.08 * risk_span_scale
+            lambda_atlas = float(np.clip(lambda_atlas, 0.0, 0.33))
+        else:
+            lambda_atlas = 0.0
+        lambda_obj = max(0.0, 1.0 - lambda_safe - lambda_atlas)
+        norm = max(_ATTN_EPS, lambda_obj + lambda_safe + lambda_atlas)
+        lambda_obj /= norm
+        lambda_safe /= norm
+        lambda_atlas /= norm
+
+        score = lambda_obj * score_obj + lambda_safe * score_safe
+        if self._atlas_enabled:
+            denom = max(1.0, float(self._atlas_robust_bins - 1))
+            top_match = (self._wolf_topology[:, None] == self._leader_topology[None, :]).astype(float)
+            rob_gap = np.abs(self._wolf_robust[:, None].astype(float) - self._leader_robust[None, :].astype(float)) / denom
+            leader_rob = np.asarray(self._leader_robust, dtype=float).reshape(3)
+            rob_min = float(np.min(leader_rob))
+            rob_span = float(np.max(leader_rob) - rob_min)
+            if rob_span > _ATTN_EPS:
+                rob_quality = (leader_rob - rob_min) / rob_span
+            else:
+                rob_quality = np.zeros(3, dtype=float)
+            score_atlas = (1.2 * top_match - 0.8 * rob_gap + 0.6 * rob_quality.reshape(1, 3)) / _ATTN_TAU_ATLAS
+            score_atlas = self._normalize_channel_rows(score_atlas)
+            score = score + lambda_atlas * score_atlas
+
+        tau_eff = 0.88 - 0.33 * p
+        tau_eff = float(np.clip(tau_eff, 0.50, 0.88))
+        score = score / tau_eff
+        score = score - np.max(score, axis=1, keepdims=True)
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            weights = np.exp(score)
+        weights_sum = np.sum(weights, axis=1, keepdims=True)
+        weights = np.divide(weights, np.where(weights_sum > _ATTN_EPS, weights_sum, 1.0))
+        weights = (1.0 - _ATTN_BLEND_EPS) * weights + (_ATTN_BLEND_EPS / 3.0)
+        weights = np.divide(weights, np.maximum(np.sum(weights, axis=1, keepdims=True), _ATTN_EPS))
+        row_span = np.max(score, axis=1) - np.min(score, axis=1)
+        invalid = ~np.isfinite(weights).all(axis=1)
+        degenerate = invalid | (row_span <= _ATTN_ROW_DEGENERATE_EPS)
+        if np.any(degenerate):
+            weights[degenerate] = (1.0 / 3.0)
+        weights = np.divide(weights, np.maximum(np.sum(weights, axis=1, keepdims=True), _ATTN_EPS))
+
+        entropy = -np.sum(weights * np.log(np.clip(weights, _ATTN_EPS, 1.0)), axis=1)
+        self.last_attention_stats = {
+            "entropy_mean": float(np.mean(entropy)) if entropy.size > 0 else 0.0,
+            "lambda_safe": float(lambda_safe),
+            "lambda_atlas": float(lambda_atlas),
+        }
+        return weights
 
     # -- One generation step --------------------------------------------
     def step(self, generation: int, max_generations: int) -> np.ndarray:
@@ -88,16 +625,15 @@ class QGWO_Engine:
         X_GWO = np.mean(X_terms, axis=0)
 
         if self.use_attention:
-            # Attention-guided leader fusion: reweight alpha/beta/delta update
-            # terms directly, so attention modulates GWO dynamics rather than
-            # adding a separate centroid pull.
-            leader_weights = np.stack([
-                self._attention_weights(self.positions[i], self.leaders)
-                for i in range(self.pop_size)
-            ])  # (pop, 3)
+            leader_weights = self._attention_weights()  # (pop, 3)
             terms_by_wolf = np.transpose(X_terms, (1, 0, 2))  # (pop, 3, dim)
             new_positions = np.sum(leader_weights[:, :, None] * terms_by_wolf, axis=1)
         else:
+            self.last_attention_stats = {
+                "entropy_mean": 0.0,
+                "lambda_safe": 0.0,
+                "lambda_atlas": 0.0,
+            }
             new_positions = X_GWO
 
         # Sanitize and clip
@@ -108,6 +644,124 @@ class QGWO_Engine:
 
         self.positions = np.clip(new_positions, self.lower, self.upper)
         return self.positions
+
+
+def _decode_atlas_context(atlas_indices: np.ndarray | None, count: int) -> tuple[np.ndarray, np.ndarray]:
+    if atlas_indices is None or count <= 0:
+        return np.zeros(max(0, count), dtype=int), np.ones(max(0, count), dtype=int)
+    raw = np.asarray(atlas_indices, dtype=int).reshape(-1)
+    if raw.size != count:
+        return np.zeros(count, dtype=int), np.ones(count, dtype=int)
+    robust = np.maximum(1, raw // _ATLAS_BIN_MULT).astype(int)
+    topology = np.mod(raw, _ATLAS_BIN_MULT).astype(int)
+    return topology, robust
+
+
+def _candidate_objective_context(candidate: Candidate) -> np.ndarray:
+    obj_raw = np.asarray(candidate.objective, dtype=float).reshape(-1)
+    details = candidate.details if isinstance(candidate.details, dict) else {}
+    detail_proxy = np.asarray([
+        float(details.get("makespan", np.nan)),
+        float(details.get("energy", np.nan)),
+        float(details.get("risk", np.nan)),
+        float(details.get("turnPenalty", np.nan)),
+    ], dtype=float)
+    out = np.ones(4, dtype=float)
+    use = min(4, obj_raw.size)
+    if use > 0:
+        out[:use] = obj_raw[:use]
+    bad = ~np.isfinite(out)
+    if np.any(bad):
+        out[bad] = detail_proxy[bad]
+    out[~np.isfinite(out)] = 1.0
+    return np.clip(out, 0.0, 1.0)
+
+
+def _candidate_risk_context(candidate: Candidate, separation_min: float) -> float:
+    obj = _candidate_objective_context(candidate)
+    details = candidate.details if isinstance(candidate.details, dict) else {}
+    conflict_rate = float(details.get("conflictRate", 0.0))
+    if not np.isfinite(conflict_rate):
+        conflict_rate = 1.0
+    min_separation = float(details.get("minSeparation", np.nan))
+    if np.isfinite(min_separation):
+        sep_sev = float(np.clip((separation_min - min_separation) / max(separation_min, _ATTN_EPS), 0.0, 1.0))
+    else:
+        sep_sev = 1.0
+    collision_violation = float(details.get("collisionViolation", 0.0))
+    if not np.isfinite(collision_violation):
+        collision_violation = 1.0
+    min_clearance = float(details.get("minClearance", np.nan))
+    if np.isfinite(min_clearance):
+        clearance_sev = max(0.0, -min_clearance) / max(separation_min, _ATTN_EPS)
+    else:
+        clearance_sev = 5.0
+    risk = (
+        0.10 * float(np.clip(obj[1], 0.0, 1.0))
+        + 0.10 * float(np.clip(conflict_rate, 0.0, 1.0))
+        + 0.35 * sep_sev
+        + 0.20 * float(np.clip(collision_violation, 0.0, 1.0))
+        + 0.25 * clearance_sev
+    )
+    return float(max(0.0, risk))
+
+
+def _candidate_is_feasible(candidate: Candidate) -> bool:
+    obj = np.asarray(candidate.objective, dtype=float).reshape(-1)
+    if obj.size == 0 or np.any(~np.isfinite(obj)):
+        return False
+    details = candidate.details if isinstance(candidate.details, dict) else {}
+    if "feasible" in details:
+        return float(details.get("feasible", 0.0)) > 0.5
+    collision = float(details.get("collisionViolation", 0.0)) > 0.5
+    separation = float(details.get("separationViolation", 0.0)) > 0.5
+    return not (collision or separation)
+
+
+def _attention_context_from_candidates(
+    candidates: list[Candidate],
+    *,
+    separation_min: float,
+    atlas_indices: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    count = len(candidates)
+    objectives = np.ones((count, 4), dtype=float)
+    risk = np.ones(count, dtype=float)
+    feasible_mask = np.zeros(count, dtype=bool)
+    for idx, cand in enumerate(candidates):
+        objectives[idx] = _candidate_objective_context(cand)
+        risk[idx] = _candidate_risk_context(cand, separation_min=separation_min)
+        feasible_mask[idx] = _candidate_is_feasible(cand)
+    topology, robust = _decode_atlas_context(atlas_indices, count)
+    feasible_ratio = float(np.mean(feasible_mask.astype(float))) if count > 0 else 1.0
+    return objectives, risk, topology, robust, feasible_ratio
+
+
+def _attention_leader_context(
+    archive: list[Candidate],
+    leader_indices: np.ndarray,
+    *,
+    separation_min: float,
+    atlas_indices: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    obj = np.ones((3, 4), dtype=float)
+    risk = np.ones(3, dtype=float)
+    top = np.zeros(3, dtype=int)
+    robust = np.ones(3, dtype=int)
+    if len(archive) <= 0 or leader_indices.size <= 0:
+        return obj, risk, top, robust
+
+    top_all, robust_all = _decode_atlas_context(atlas_indices, len(archive))
+    for slot, raw_idx in enumerate(np.asarray(leader_indices, dtype=int).reshape(-1)[:3]):
+        idx = int(np.clip(raw_idx, 0, len(archive) - 1))
+        cand = archive[idx]
+        obj[slot] = _candidate_objective_context(cand)
+        risk[slot] = _candidate_risk_context(cand, separation_min=separation_min)
+        if top_all.size == len(archive):
+            top[slot] = int(top_all[idx])
+            robust[slot] = int(robust_all[idx])
+    robust = np.maximum(1, robust)
+    return obj, risk, top, robust
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -187,13 +841,23 @@ def _weighted_occ_sample(
     inverse: bool,
 ) -> int:
     obj_occ = _occupancy_per_solution(grid_indices)
+    quality = np.zeros_like(obj_occ, dtype=float)
     atlas_occ = (
         _occupancy_per_solution(atlas_indices)
         if (atlas_indices is not None and atlas_indices.size == grid_indices.size)
         else np.ones_like(obj_occ)
     )
+    if atlas_indices is not None and atlas_indices.size == grid_indices.size:
+        robust = np.maximum(1, (np.asarray(atlas_indices, dtype=int).reshape(-1) // _ATLAS_BIN_MULT)).astype(float)
+        robust_span = float(np.max(robust) - np.min(robust))
+        if robust_span > _ATTN_EPS:
+            quality = (robust - np.min(robust)) / robust_span
     occ = objective_weight * obj_occ + atlas_weight * atlas_occ
-    logits = (-scale * occ) if inverse else (scale * occ)
+    quality_bias = 3.5 * quality
+    if inverse:
+        logits = (-scale * occ) + quality_bias
+    else:
+        logits = (scale * occ) - quality_bias
     probs = _stable_softmax(logits)
     return int(np.random.choice(probs.shape[0], p=probs))
 
@@ -383,7 +1047,8 @@ def _atlas_for_candidates(
             sig = topology_signature(p, model, atlas_config.max_obstacles)
             fleet_sigs.append(sig)
         avg_sig = np.mean(fleet_sigs, axis=0) if fleet_sigs else np.zeros(1)
-        _, rob_bin = robustness_from_cost(cand.objective, atlas_config.n_robust_bins)
+        robust_cost = _candidate_objective_context(cand)
+        _, rob_bin = robustness_from_cost(robust_cost, atlas_config.n_robust_bins)
         top_bin    = topology_bin_from_signature(avg_sig, atlas_config)
         indices[i] = rob_bin * 1000 + top_bin
     return indices
@@ -399,11 +1064,11 @@ def _select_leaders(
     divisions: int,
     atlas_config: AtlasConfig,
     paper_standard: bool = False,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Select 3 leaders (alpha, beta, delta) from archive grid occupancy."""
     n = len(archive)
     if n == 0:
-        return np.zeros((3, archive[0].vector.size if archive else 1))
+        return np.zeros((3, 1), dtype=float), np.zeros(3, dtype=int)
 
     pool_idx = np.arange(n)
 
@@ -412,14 +1077,17 @@ def _select_leaders(
     grid, _, _ = _build_grid(pool_obj, divisions, inflation_alpha=(0.1 if paper_standard else 0.0))
 
     leaders = []
+    leader_archive_indices: list[int] = []
     available_local = np.arange(pool_idx.size)
     for _ in range(3):
         if available_local.size == 0:
             available_local = np.arange(pool_idx.size)
-        active_grid = grid[available_local]
-        active_atl = pool_atl[available_local] if pool_atl is not None else None
+        candidate_local = available_local
+        active_grid = grid[candidate_local]
+        active_atl = pool_atl[candidate_local] if pool_atl is not None else None
         if paper_standard:
             idx_in_active = _paper_select_cell_member(active_grid)
+            chosen_local = candidate_local[idx_in_active]
         else:
             idx_in_active = _weighted_occ_sample(
                 active_grid,
@@ -429,11 +1097,13 @@ def _select_leaders(
                 scale=10.0,
                 inverse=True,
             )
-        chosen_local = available_local[idx_in_active]
-        leaders.append(archive[pool_idx[chosen_local]].vector.copy())
+            chosen_local = candidate_local[idx_in_active]
+        chosen_archive_idx = int(pool_idx[chosen_local])
+        leaders.append(archive[chosen_archive_idx].vector.copy())
+        leader_archive_indices.append(chosen_archive_idx)
         available_local = available_local[available_local != chosen_local]
 
-    return np.stack(leaders)  # shape (3, dim)
+    return np.stack(leaders), np.asarray(leader_archive_indices, dtype=int)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -516,6 +1186,7 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     if not atlas_config.enabled:
         atlas_config.objective_weight = 1.0
         atlas_config.atlas_weight = 0.0
+    separation_min = float(params.separation_min)
     run_indices     = _resolve_run_indices(params)
     resume_existing = bool(params.extra.get("resumeExistingRuns", True))
 
@@ -558,9 +1229,27 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 params.population,
                 use_attention=use_attention,
             )
+        use_rtcs_init = bool(params.extra.get("moqgwoInitBias", False))
+        if use_rtcs_init and (not paper_standard) and (not use_gpu_strict):
+            engine.positions = _rtcs_initialize_population(
+                engine.positions,
+                model=model,
+                fleet_size=fleet_size,
+                n_waypoints=n_waypoints,
+                lower=lower,
+                upper=upper,
+                separation_min=separation_min,
+                atlas_config=atlas_config,
+                use_topology=bool(atlas_config.enabled),
+            )
+        attention_context_enabled = bool(use_attention and (not paper_standard) and hasattr(engine, "set_attention_context"))
         hv_hist = (np.zeros((params.generations, 2), dtype=float)
                    if params.compute_metrics else np.zeros((0, 2), dtype=float))
         run_gpu_peak_bytes = 0.0
+        attention_entropy_sum = 0.0
+        attention_lambda_safe_sum = 0.0
+        attention_lambda_atlas_sum = 0.0
+        attention_steps = 0
 
         # Initial evaluation
         if use_gpu_strict:
@@ -574,6 +1263,18 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 engine.positions, model, fleet_size=fleet_size, n_waypoints=n_waypoints
             )
         init_atlas = _atlas_for_candidates(init_cands, model, atlas_config) if atlas_config.enabled else None
+        if attention_context_enabled:
+            init_obj_ctx, init_risk_ctx, init_top_ctx, init_rob_ctx, init_feasible_ratio = _attention_context_from_candidates(
+                init_cands,
+                separation_min=separation_min,
+                atlas_indices=init_atlas,
+            )
+        else:
+            init_obj_ctx = np.ones((params.population, 4), dtype=float)
+            init_risk_ctx = np.ones(params.population, dtype=float)
+            init_top_ctx = np.zeros(params.population, dtype=int)
+            init_rob_ctx = np.ones(params.population, dtype=int)
+            init_feasible_ratio = 1.0
 
         archive: list[Candidate] = []
         arc_atlas: np.ndarray | None = np.zeros(0, dtype=int) if atlas_config.enabled else None
@@ -588,19 +1289,49 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
         # Set initial leaders from archive
         if archive:
-            selected_leaders = _select_leaders(
-                archive, arc_atlas, grid_divisions, active_atlas_config,
+            selected_leaders, selected_indices = _select_leaders(
+                archive,
+                arc_atlas,
+                grid_divisions,
+                active_atlas_config,
                 paper_standard=paper_standard,
             )
             if use_gpu_strict:
                 engine.set_leaders(selected_leaders)
             else:
                 engine.leaders = selected_leaders
+            if attention_context_enabled:
+                leader_obj_ctx, leader_risk_ctx, leader_top_ctx, leader_rob_ctx = _attention_leader_context(
+                    archive,
+                    selected_indices,
+                    separation_min=separation_min,
+                    atlas_indices=arc_atlas,
+                )
+                engine.set_attention_context(
+                    wolf_objectives=init_obj_ctx,
+                    wolf_risk=init_risk_ctx,
+                    feasibility_pressure=float(np.clip(1.0 - init_feasible_ratio, 0.0, 1.0)),
+                    leader_objectives=leader_obj_ctx,
+                    leader_risk=leader_risk_ctx,
+                    wolf_topology=init_top_ctx,
+                    wolf_robust=init_rob_ctx,
+                    leader_topology=leader_top_ctx,
+                    leader_robust=leader_rob_ctx,
+                    atlas_enabled=bool(active_atlas_config.enabled),
+                    atlas_robust_bins=int(active_atlas_config.n_robust_bins),
+                )
 
         # ── Generation Loop ───────────────────────────────────────────
         for gen in range(1, params.generations + 1):
             # Update positions
             new_positions = engine.step(gen, params.generations)
+            if use_attention and (not paper_standard):
+                stats = getattr(engine, "last_attention_stats", None)
+                if isinstance(stats, dict):
+                    attention_entropy_sum += float(stats.get("entropy_mean", 0.0))
+                    attention_lambda_safe_sum += float(stats.get("lambda_safe", 0.0))
+                    attention_lambda_atlas_sum += float(stats.get("lambda_atlas", 0.0))
+                    attention_steps += 1
 
             # Evaluate new population
             if use_gpu_strict:
@@ -618,6 +1349,18 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 if active_atlas_config.enabled
                 else None
             )
+            if attention_context_enabled:
+                new_obj_ctx, new_risk_ctx, new_top_ctx, new_rob_ctx, new_feasible_ratio = _attention_context_from_candidates(
+                    new_cands,
+                    separation_min=separation_min,
+                    atlas_indices=new_atlas,
+                )
+            else:
+                new_obj_ctx = np.ones((params.population, 4), dtype=float)
+                new_risk_ctx = np.ones(params.population, dtype=float)
+                new_top_ctx = np.zeros(params.population, dtype=int)
+                new_rob_ctx = np.ones(params.population, dtype=int)
+                new_feasible_ratio = 1.0
 
             # Archive update
             combined_atlas = None
@@ -630,14 +1373,37 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
             )
 
             if archive:
-                selected_leaders = _select_leaders(
-                    archive, arc_atlas, grid_divisions, active_atlas_config,
+                selected_leaders, selected_indices = _select_leaders(
+                    archive,
+                    arc_atlas,
+                    grid_divisions,
+                    active_atlas_config,
                     paper_standard=paper_standard,
                 )
                 if use_gpu_strict:
                     engine.set_leaders(selected_leaders)
                 else:
                     engine.leaders = selected_leaders
+                if attention_context_enabled:
+                    leader_obj_ctx, leader_risk_ctx, leader_top_ctx, leader_rob_ctx = _attention_leader_context(
+                        archive,
+                        selected_indices,
+                        separation_min=separation_min,
+                        atlas_indices=arc_atlas,
+                    )
+                    engine.set_attention_context(
+                        wolf_objectives=new_obj_ctx,
+                        wolf_risk=new_risk_ctx,
+                        feasibility_pressure=float(np.clip(1.0 - new_feasible_ratio, 0.0, 1.0)),
+                        leader_objectives=leader_obj_ctx,
+                        leader_risk=leader_risk_ctx,
+                        wolf_topology=new_top_ctx,
+                        wolf_robust=new_rob_ctx,
+                        leader_topology=leader_top_ctx,
+                        leader_robust=leader_rob_ctx,
+                        atlas_enabled=bool(active_atlas_config.enabled),
+                        atlas_robust_bins=int(active_atlas_config.n_robust_bins),
+                    )
 
             # Metrics
             if params.compute_metrics and hv_hist.shape[0] > 0:
@@ -700,6 +1466,9 @@ def run_fleet_moqgwo(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 "requestedPopulation": float(params.population),
                 "effectivePopulation": float(params.population),
                 "archiveSize": float(archive_size),
+                "moqgwoAttentionEntropyMean": float(attention_entropy_sum / max(1, attention_steps)),
+                "moqgwoLambdaSafeMean": float(attention_lambda_safe_sum / max(1, attention_steps)),
+                "moqgwoLambdaAtlasMean": float(attention_lambda_atlas_sum / max(1, attention_steps)),
             },
         )
 
