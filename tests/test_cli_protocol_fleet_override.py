@@ -42,7 +42,7 @@ class ProtocolFleetOverrideTest(unittest.TestCase):
                 "mode: multi\nfleetSize: 2\nfleetSizes: [2, 4]\n",
                 encoding="utf-8",
             )
-            args = _build_fleet_args(protocol_path=protocol_path, fleet_size=3, fleet_sizes="3,5,8")
+            args = _build_fleet_args(protocol_path=protocol_path, fleet_size=1, fleet_sizes="1,3")
             params = _build_params(args)
             self.assertEqual(params.fleet_size, 2)
             self.assertEqual(params.fleet_sizes, (2, 4))

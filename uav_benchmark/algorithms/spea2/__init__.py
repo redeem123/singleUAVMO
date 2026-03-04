@@ -30,30 +30,7 @@ from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
 
 
-def _sanitize_objectives(pop_obj: np.ndarray) -> np.ndarray:
-    matrix = np.asarray(pop_obj, dtype=float)
-    if matrix.size == 0:
-        return matrix.reshape(0, 0)
-    finite_mask = np.isfinite(matrix)
-    if np.all(finite_mask):
-        return matrix
-    col_max = np.zeros(matrix.shape[1], dtype=float)
-    for col in range(matrix.shape[1]):
-        col_values = matrix[finite_mask[:, col], col]
-        if col_values.size > 0:
-            col_max[col] = float(np.max(col_values))
-    penalties = np.sum(~finite_mask, axis=1, keepdims=True).astype(float)
-    replacement = col_max.reshape(1, -1) + 1e6 + penalties
-    return np.where(finite_mask, matrix, replacement)
-
-
-def _pairwise_distance(pop_obj: np.ndarray) -> np.ndarray:
-    if pop_obj.size == 0:
-        return np.zeros((0, 0), dtype=float)
-    diff = pop_obj[:, np.newaxis, :] - pop_obj[np.newaxis, :, :]
-    distance = np.linalg.norm(diff, axis=2)
-    np.fill_diagonal(distance, np.inf)
-    return distance
+from uav_benchmark.algorithms.shared.pareto_utils import _sanitize_objectives, _pairwise_distance
 
 
 def _cal_fitness(pop_obj: np.ndarray) -> np.ndarray:
@@ -161,7 +138,7 @@ def _run_fleet_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -249,11 +226,4 @@ def _run_fleet_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
 
 def run_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) or int(params.fleet_size) > 1:
-        return _run_fleet_spea2(model, params)
-    # Legacy-path fallback keeps benchmark compatibility for SPEA2 names;
-    # a dedicated path-native SPEA2 variant can be added later.
-    from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-    return run_nsga2(model, params)
+    return _run_fleet_spea2(model, params)

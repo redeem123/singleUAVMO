@@ -4,8 +4,14 @@
 
 This repository provides a reproducible benchmark framework for constrained UAV path planning and mission optimization. It uses one fleet-based architecture and compares multiple evolutionary baselines.
 
-Current scope includes:
+### Recent Upgrades
+- **Performance:** Numba JIT acceleration for numerical evaluation pipelines and KDTree spatial indexing for $O(K \log K)$ fleet conflict detection.
+- **Accuracy:** Smooth bilinear terrain height interpolation.
+- **Architecture:** Formalized `UAVAlgorithm` protocol with a centralized component registry.
+- **Validation:** Automated GitHub Actions CI, Wilcoxon rank-sum statistical parity testing, and Hypothesis property-based testing.
+- **Data:** Standardized JSON metadata export alongside MATLAB `.mat` artifacts.
 
+Current scope includes:
 - base-fleet workflows (`fleet_size=1`),
 - fleet mission benchmarking (homogeneous point-to-point),
 - optional GPU acceleration (`--gpu-mode auto|off|force`).
@@ -40,25 +46,38 @@ python3 -m pip install -e ".[dev]"
 Base-fleet smoke (`fleet_size=1`):
 
 ```bash
-python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet1 --generations 5 --population 20 --runs 1 --fleet-size 1 --compute-metrics
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet1 --generations 5 --population 20 --runs 1 --fleet-size 1
 ```
 
 Fleet smoke:
 
 ```bash
-python3 -m uav_benchmark.cli benchmark-fleet --project-root . --results-dir results/smoke_fleet --protocol configs/smoke_fleet.yaml --compute-metrics --gpu-mode auto
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet --protocol configs/smoke_fleet.yaml --gpu-mode auto
 ```
 
-Cleanup generated artifacts/caches:
+`benchmark` now always runs the full post-processing pipeline automatically after optimization:
+
+- compute metrics
+- statistical summary
+- benchmark report CSV/JSON
+- research plots
+
+Default benchmark scope (without overrides):
+
+- fleet sizes: `1,3`
+- base problems: `c_100`, `m_100`, `s_120`
+
+Cleanup generated artifacts/caches, or archive old runs:
 
 ```bash
 python3 scripts/clean_workspace.py --results --caches
+python3 -m uav_benchmark.cli archive --results-dir results --archive-dir archives
 ```
 
 Additional run controls (`--extra-json`):
 
 - `resumeExistingRuns: true|false`: skip completed `Run_*` folders and continue interrupted runs.
-- `maxWorkers: N`: cap worker processes (defaults to available CPU count).
+- `maxWorkers: N`: cap worker processes (default is `14`).
 - `problemNames: ["c_100_uav3", ...]`: run only selected problems/scenarios.
 
 ## Fleet Paper Pipeline
@@ -74,7 +93,7 @@ This runs benchmark + report + stats + fleet plots.
 Helper scripts:
 
 ```bash
-python3 scripts/run_moqgwo_component_ablation.py
+python3 scripts/run_mogwo_component_ablation.py
 python3 scripts/run_benchmark_fleet.py
 ```
 
@@ -92,10 +111,7 @@ Publication docs:
 
 ```bash
 python3 -m uav_benchmark.cli --help
-python3 -m uav_benchmark.cli compute-metrics --results-dir results
-python3 -m uav_benchmark.cli report-metrics --project-root . --results-dir results --baseline-algorithm NMOPSO
-python3 -m uav_benchmark.cli stats --results-dir results
-python3 -m uav_benchmark.cli plots --project-root . --results-dir results
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/bench
 python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 ```
 

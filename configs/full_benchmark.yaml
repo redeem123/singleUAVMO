@@ -12,10 +12,8 @@ seed: 11
 gpuMode: auto
 algorithms:
   [
-    "A2MOQGWO",
-    "MOQGWO-NO-ATTENTION",
-    "MOQGWO-NO-ATLAS",
-    "MOQGWO-STANDARD-GWO",
+    "A2MOGWO",
+    "MOGWO-NO-ATTENTION",
     "MOPSO",
     "SMPSO",
     "NMOPSO",
@@ -24,6 +22,7 @@ algorithms:
     "APEX-SHADE",
   ]
 problemNames: ["c_100", "m_100", "s_120"]
+# These top-level keys are all passed into params.extra via BenchmarkParams.from_mapping().
 hardCollisionConstraint: true
 nRep: 100
 maxWorkers: 14

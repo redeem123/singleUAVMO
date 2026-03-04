@@ -103,7 +103,7 @@ def _load_mission_conflict(run_dir: Path) -> float:
 
 def compute_metrics(results_dir: Path, config: MetricConfig | None = None) -> None:
     cfg = config or MetricConfig()
-    np.random.seed(cfg.seed)
+    rng = np.random.default_rng(cfg.seed)
     ref_points = _build_ref_points(results_dir)
     for algorithm_dir in sorted(results_dir.iterdir()):
         if not algorithm_dir.is_dir() or algorithm_dir.name.startswith(".") or algorithm_dir.name == "Plots":
@@ -131,7 +131,7 @@ def compute_metrics(results_dir: Path, config: MetricConfig | None = None) -> No
                 if pop_obj.size == 0:
                     continue
                 if cfg.max_points > 0 and pop_obj.shape[0] > cfg.max_points:
-                    picks = np.random.permutation(pop_obj.shape[0])[: cfg.max_points]
+                    picks = rng.permutation(pop_obj.shape[0])[: cfg.max_points]
                     pop_obj = pop_obj[picks]
                 reference = ref_points.get(problem_name)
                 hv = cal_metric(1, pop_obj, problem_index, objective_count or pop_obj.shape[1], cfg.hv_samples, reference)

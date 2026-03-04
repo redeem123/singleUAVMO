@@ -14,21 +14,12 @@ from uav_benchmark.config import BenchmarkParams
 
 
 _BENCHMARK_FLEET_SIZE_DEFAULT = 1
-_BENCHMARK_FLEET_SIZES_DEFAULT = ""
-_BENCHMARK_FLEET_PRESET_SIZE_DEFAULT = 3
-_BENCHMARK_FLEET_PRESET_SIZES_DEFAULT = "3,5,8"
-
-
+_BENCHMARK_FLEET_SIZES_DEFAULT = "1,3"
+_BENCHMARK_DEFAULT_PROBLEM_NAMES = ("c_100", "m_100", "s_120")
 def _parse_fleet_sizes(raw: str) -> tuple[int, ...]:
     if not raw:
         return ()
     return tuple(int(item.strip()) for item in raw.split(",") if item.strip())
-
-
-def _fleet_defaults_for_command(command: str) -> tuple[int, str]:
-    if command == "benchmark-fleet":
-        return _BENCHMARK_FLEET_PRESET_SIZE_DEFAULT, _BENCHMARK_FLEET_PRESET_SIZES_DEFAULT
-    return _BENCHMARK_FLEET_SIZE_DEFAULT, _BENCHMARK_FLEET_SIZES_DEFAULT
 
 
 def _load_protocol(path: Path) -> dict:
@@ -48,11 +39,16 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
     extra = {}
     if args.extra_json:
         extra = json.loads(args.extra_json)
+    # Only inject default problemNames when not loading a protocol
+    # (protocols specify their own problemNames)
+    if not (hasattr(args, "protocol") and args.protocol):
+        if "problemNames" not in extra:
+            extra["problemNames"] = list(_BENCHMARK_DEFAULT_PROBLEM_NAMES)
     params = BenchmarkParams(
         generations=args.generations,
         population=args.population,
         runs=args.runs,
-        compute_metrics=args.compute_metrics,
+        compute_metrics=True,
         use_parallel=False,
         parallel_mode="none",
         safe_dist=args.safe_dist,
@@ -74,10 +70,11 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
         protocol_params = BenchmarkParams.from_mapping(protocol_mapping)
         protocol_params.results_dir = Path(args.results_dir).resolve()
         protocol_params.extra.update(extra)
-        # Command-line mode override is intentional for aliases like benchmark-fleet.
+        # Command-line mode override is intentional.
         protocol_params.mode = params.mode
         protocol_params.gpu_mode = params.gpu_mode
-        default_fleet_size, default_fleet_sizes_raw = _fleet_defaults_for_command(str(getattr(args, "command", "")))
+        default_fleet_size = _BENCHMARK_FLEET_SIZE_DEFAULT
+        default_fleet_sizes_raw = _BENCHMARK_FLEET_SIZES_DEFAULT
         if hasattr(args, "fleet_sizes") and params.fleet_sizes and str(getattr(args, "fleet_sizes", "")) != default_fleet_sizes_raw:
             protocol_params.fleet_sizes = params.fleet_sizes
         if hasattr(args, "fleet_size") and int(getattr(args, "fleet_size", default_fleet_size)) != default_fleet_size:
@@ -104,7 +101,6 @@ def main() -> None:
     benchmark_parser.add_argument("--generations", default=500, type=int)
     benchmark_parser.add_argument("--population", default=100, type=int)
     benchmark_parser.add_argument("--runs", default=14, type=int)
-    benchmark_parser.add_argument("--compute-metrics", action="store_true")
     benchmark_parser.add_argument("--safe-dist", default=20.0, type=float)
     benchmark_parser.add_argument("--drone-size", default=1.0, type=float)
     benchmark_parser.add_argument("--seed", default=None, type=int)
@@ -117,32 +113,6 @@ def main() -> None:
     benchmark_parser.add_argument("--evaluation-budget", default=0, type=int)
     benchmark_parser.add_argument("--gpu-mode", choices=("auto", "off", "force"), default="auto", type=str)
     benchmark_parser.add_argument("--protocol", default="", type=str, help="YAML protocol config path")
-    benchmark_parser.add_argument(
-        "--plots-after",
-        action="store_true",
-        help="Generate research plots automatically after benchmark completes",
-    )
-
-    fleet_parser = subparsers.add_parser("benchmark-fleet")
-    fleet_parser.add_argument("--project-root", default=".", type=str)
-    fleet_parser.add_argument("--results-dir", default="results", type=str)
-    fleet_parser.add_argument("--generations", default=300, type=int)
-    fleet_parser.add_argument("--population", default=80, type=int)
-    fleet_parser.add_argument("--runs", default=10, type=int)
-    fleet_parser.add_argument("--compute-metrics", action="store_true")
-    fleet_parser.add_argument("--safe-dist", default=20.0, type=float)
-    fleet_parser.add_argument("--drone-size", default=1.0, type=float)
-    fleet_parser.add_argument("--seed", default=11, type=int)
-    fleet_parser.add_argument("--extra-json", default="", type=str)
-    fleet_parser.add_argument("--fleet-size", default=_BENCHMARK_FLEET_PRESET_SIZE_DEFAULT, type=int)
-    fleet_parser.add_argument("--fleet-sizes", default=_BENCHMARK_FLEET_PRESET_SIZES_DEFAULT, type=str)
-    fleet_parser.add_argument("--scenario-set", default="paper_medium", type=str)
-    fleet_parser.add_argument("--separation-min", default=10.0, type=float)
-    fleet_parser.add_argument("--max-turn-deg", default=75.0, type=float)
-    fleet_parser.add_argument("--evaluation-budget", default=0, type=int)
-    fleet_parser.add_argument("--gpu-mode", choices=("auto", "off", "force"), default="auto", type=str)
-    fleet_parser.add_argument("--protocol", default="", type=str)
-    fleet_parser.add_argument("--plots-after", action="store_true")
 
     ablation_parser = subparsers.add_parser("ablation")
     ablation_parser.add_argument("--project-root", default=".", type=str)
@@ -203,15 +173,58 @@ def main() -> None:
     peak_parser.add_argument("--project-root", default=".", type=str)
     peak_parser.add_argument("--output-dir", default="", type=str)
 
+    archive_parser = subparsers.add_parser("archive")
+    archive_parser.add_argument("--results-dir", default="results", type=str)
+    archive_parser.add_argument("--archive-dir", default="archives", type=str)
+
     args = parser.parse_args()
 
-    if args.command == "benchmark" or args.command == "benchmark-fleet":
+    if args.command == "archive":
+        import shutil
+        from datetime import datetime
+        results_path = Path(args.results_dir).resolve()
+        archive_path = Path(args.archive_dir).resolve()
+        if not results_path.exists():
+            print(f"Results directory not found: {results_path}")
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_dir = archive_path / f"results_archive_{timestamp}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Moving {results_path} to {target_dir}")
+        for item in results_path.iterdir():
+            shutil.move(str(item), str(target_dir))
+        print("Archive complete.")
+        return
+
+    if args.command == "benchmark":
         project_root = Path(args.project_root).resolve()
         params = _build_params(args)
         params.results_dir = params.results_dir.resolve()
         run_benchmark(project_root, params)
-        if args.plots_after:
-            generate_research_plots(project_root, params.results_dir.resolve())
+        metrics_cfg = MetricConfig(
+            hv_samples=2000,
+            max_points=100,
+            max_runs=0,
+            seed=int(params.seed) if params.seed is not None else 0,
+        )
+        compute_metrics(params.results_dir.resolve(), metrics_cfg)
+        statistical_analysis(params.results_dir.resolve(), metrics_cfg)
+        baseline_algorithm = "NMOPSO"
+        if isinstance(params.extra, dict):
+            raw_algorithms = params.extra.get("algorithms")
+            if isinstance(raw_algorithms, (list, tuple)) and raw_algorithms:
+                baseline_algorithm = str(raw_algorithms[0])
+        report_cfg = ReportConfig(
+            project_root=project_root,
+            results_dir=params.results_dir.resolve(),
+            output_dir=None,
+            hv_samples=2000,
+            max_runs=0,
+            baseline_algorithm=baseline_algorithm,
+            seed=int(params.seed) if params.seed is not None else 0,
+        )
+        generate_benchmark_report(report_cfg)
+        generate_research_plots(project_root, params.results_dir.resolve())
         return
     if args.command == "ablation":
         params = _build_params(args)

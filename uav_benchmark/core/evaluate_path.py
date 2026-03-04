@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 import numpy as np
+from numba import njit
 
 
 def _value(model: dict[str, Any], *keys: str, default: float = 0.0) -> float:
@@ -13,27 +14,50 @@ def _value(model: dict[str, Any], *keys: str, default: float = 0.0) -> float:
     return float(default)
 
 
+@njit(fastmath=True)
 def _interpolate_path(path_xyz: np.ndarray, step_size: float) -> np.ndarray:
     """Interpolate path segments so no gap exceeds *step_size*."""
-    if path_xyz.shape[0] < 2:
+    n_pts = path_xyz.shape[0]
+    if n_pts < 2:
         return path_xyz.copy()
-    diffs = np.diff(path_xyz, axis=0)
-    distances = np.linalg.norm(diffs, axis=1)
-    steps_per_seg = np.maximum(1, np.ceil(distances / step_size).astype(int))
-    total_points = 1 + int(np.sum(steps_per_seg))
-    result = np.empty((total_points, 3), dtype=float)
+    
+    n_seg = n_pts - 1
+    distances = np.empty(n_seg, dtype=np.float64)
+    steps_per_seg = np.empty(n_seg, dtype=np.int64)
+    total_points = 1
+    
+    for i in range(n_seg):
+        dx = path_xyz[i+1, 0] - path_xyz[i, 0]
+        dy = path_xyz[i+1, 1] - path_xyz[i, 1]
+        dz = path_xyz[i+1, 2] - path_xyz[i, 2]
+        d = math.sqrt(dx*dx + dy*dy + dz*dz)
+        distances[i] = d
+        
+        steps = int(math.ceil(d / step_size))
+        if steps < 1:
+            steps = 1
+        steps_per_seg[i] = steps
+        total_points += steps
+        
+    result = np.empty((total_points, 3), dtype=np.float64)
     result[0] = path_xyz[0]
     cursor = 1
-    for seg_idx in range(path_xyz.shape[0] - 1):
+    
+    for seg_idx in range(n_seg):
         n_steps = steps_per_seg[seg_idx]
-        t = np.arange(1, n_steps + 1, dtype=float) / n_steps
-        result[cursor : cursor + n_steps] = (
-            (1.0 - t[:, np.newaxis]) * path_xyz[seg_idx] + t[:, np.newaxis] * path_xyz[seg_idx + 1]
-        )
-        cursor += n_steps
+        p0 = path_xyz[seg_idx]
+        p1 = path_xyz[seg_idx + 1]
+        for step in range(1, n_steps + 1):
+            t = float(step) / float(n_steps)
+            result[cursor, 0] = (1.0 - t) * p0[0] + t * p1[0]
+            result[cursor, 1] = (1.0 - t) * p0[1] + t * p1[1]
+            result[cursor, 2] = (1.0 - t) * p0[2] + t * p1[2]
+            cursor += 1
+            
     return result[:cursor]
 
 
+@njit(fastmath=True)
 def _dist_point_to_segment_2d(point: np.ndarray, start_point: np.ndarray, end_point: np.ndarray) -> float:
     """Distance from a single 2-D point to a line segment."""
     segment = end_point - start_point
@@ -46,6 +70,7 @@ def _dist_point_to_segment_2d(point: np.ndarray, start_point: np.ndarray, end_po
     return float(np.linalg.norm(point - projection))
 
 
+@njit(fastmath=True)
 def _dist_points_to_segments_2d(
     centers: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray
 ) -> np.ndarray:
@@ -61,19 +86,80 @@ def _dist_points_to_segments_2d(
     -------
     distances : (N, M)  distance from each segment to each centre
     """
-    # seg_dirs: (N, 2)
-    seg_dirs = seg_ends - seg_starts
-    seg_len_sq = np.sum(seg_dirs ** 2, axis=1, keepdims=True)  # (N, 1)
-    seg_len_sq = np.maximum(seg_len_sq, 1e-30)  # avoid /0
+    n_seg = seg_starts.shape[0]
+    n_obs = centers.shape[0]
+    distances = np.empty((n_seg, n_obs), dtype=np.float64)
 
-    # diff: (N, M, 2) via broadcasting  — centres is (1, M, 2)
-    diff = centers[np.newaxis, :, :] - seg_starts[:, np.newaxis, :]  # (N, M, 2)
-    # project: (N, M)
-    t = np.sum(diff * seg_dirs[:, np.newaxis, :], axis=2) / seg_len_sq  # (N, M)
-    t = np.clip(t, 0.0, 1.0)
-    # projection points: (N, M, 2)
-    proj = seg_starts[:, np.newaxis, :] + t[:, :, np.newaxis] * seg_dirs[:, np.newaxis, :]
-    return np.linalg.norm(centers[np.newaxis, :, :] - proj, axis=2)  # (N, M)
+    for i in range(n_seg):
+        sx0 = seg_starts[i, 0]
+        sy0 = seg_starts[i, 1]
+        sx1 = seg_ends[i, 0]
+        sy1 = seg_ends[i, 1]
+        
+        dx = sx1 - sx0
+        dy = sy1 - sy0
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq < 1e-30:
+            seg_len_sq = 1e-30
+            
+        for j in range(n_obs):
+            cx = centers[j, 0]
+            cy = centers[j, 1]
+            
+            p_dx = cx - sx0
+            p_dy = cy - sy0
+            
+            t = (p_dx * dx + p_dy * dy) / seg_len_sq
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+                
+            proj_x = sx0 + t * dx
+            proj_y = sy0 + t * dy
+            
+            dist_x = cx - proj_x
+            dist_y = cy - proj_y
+            distances[i, j] = math.sqrt(dist_x * dist_x + dist_y * dist_y)
+
+    return distances
+
+
+@njit(fastmath=True)
+def _bilinear_interpolate(height_map: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Perform bilinear interpolation on the height map for given (x, y) coordinates.
+    Expects 0-based coordinates.
+    """
+    h, w = height_map.shape
+    n_pts = x.shape[0]
+    out = np.empty(n_pts, dtype=np.float64)
+    for i in range(n_pts):
+        px = x[i]
+        py = y[i]
+        
+        x0 = int(np.floor(px))
+        x1 = x0 + 1
+        y0 = int(np.floor(py))
+        y1 = y0 + 1
+        
+        x0_c = min(max(x0, 0), w - 1)
+        x1_c = min(max(x1, 0), w - 1)
+        y0_c = min(max(y0, 0), h - 1)
+        y1_c = min(max(y1, 0), h - 1)
+        
+        wx1 = min(max(float(x1) - px, 0.0), 1.0)
+        wx0 = 1.0 - wx1
+        wy1 = min(max(float(y1) - py, 0.0), 1.0)
+        wy0 = 1.0 - wy1
+        
+        v00 = height_map[y0_c, x0_c]
+        v10 = height_map[y1_c, x0_c]
+        v01 = height_map[y0_c, x1_c]
+        v11 = height_map[y1_c, x1_c]
+        
+        out[i] = v00 * wx1 * wy1 + v10 * wx1 * wy0 + v01 * wx0 * wy1 + v11 * wx0 * wy0
+        
+    return out
 
 
 def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[np.ndarray, dict[str, float]]:
@@ -100,9 +186,8 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
         )
 
     height_map = np.asarray(model["H"], dtype=float)
-    x_index = np.clip(np.rint(x_coord).astype(int), 1, int(xmax)) - 1
-    y_index = np.clip(np.rint(y_coord).astype(int), 1, int(ymax)) - 1
-    ground = height_map[y_index, x_index]
+    # Use 0-based coordinates for bilinear lookup (MATLAB/Legacy uses 1-based indices)
+    ground = _bilinear_interpolate(height_map, x_coord - 1.0, y_coord - 1.0)
     z_relative = z_absolute - ground
 
     start_point = path_xyz[0]
@@ -155,9 +240,8 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
     x_interp = interpolated[:, 0]
     y_interp = interpolated[:, 1]
     z_interp_abs = interpolated[:, 2]
-    x_index_interp = np.clip(np.rint(x_interp).astype(int), 1, int(xmax)) - 1
-    y_index_interp = np.clip(np.rint(y_interp).astype(int), 1, int(ymax)) - 1
-    ground_interp = height_map[y_index_interp, x_index_interp]
+
+    ground_interp = _bilinear_interpolate(height_map, x_interp - 1.0, y_interp - 1.0)
     z_interp_rel = z_interp_abs - ground_interp
 
     # ── Objective 2: obstacle/terrain clearance (vectorised) ───────

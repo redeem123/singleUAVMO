@@ -385,6 +385,18 @@ def _save_fleet_artifacts(
     if run_metadata:
         for key, value in run_metadata.items():
             run_stats[str(key)] = value
+    save_mat(run_dir / "run_stats.mat", run_stats)
+
+    from uav_benchmark.io.results import save_run_summary_json
+    # Pass a dummy params object with standard metadata structure if true params is unavailable
+    class _DummyParams:
+        algorithm = run_stats.get("algorithm", "fleet_run")
+        problem_name = run_stats.get("problemName", "unknown")
+        fleet_size = 0
+        generations = 0
+        population = len(final_candidates)
+        seed = 0
+    save_run_summary_json(run_dir / "run_summary.json", _DummyParams(), run_stats)
 
     # RL trace
     if rl_trace is not None:
@@ -402,7 +414,6 @@ def _save_fleet_artifacts(
     energy_values: list[float] = []
     risk_values: list[float] = []
     max_turn_values: list[float] = []
-    turn_violation_values: list[float] = []
     separation_violation_values: list[float] = []
     collision_violation_values: list[float] = []
     min_clearance_values: list[float] = []
@@ -417,7 +428,6 @@ def _save_fleet_artifacts(
         energy_values.append(float(details.get("energy", np.nan)))
         risk_values.append(float(details.get("risk", np.nan)))
         max_turn_values.append(float(details.get("maxTurnDeg", np.nan)))
-        turn_violation_values.append(float(details.get("turnViolation", np.nan)))
         separation_violation_values.append(float(details.get("separationViolation", np.nan)))
         collision_violation_values.append(float(details.get("collisionViolation", np.nan)))
         min_clearance_values.append(float(details.get("minClearance", np.nan)))
@@ -451,7 +461,6 @@ def _save_fleet_artifacts(
             "energy": np.asarray(energy_values, dtype=float),
             "risk": np.asarray(risk_values, dtype=float),
             "maxTurnDeg": np.asarray(max_turn_values, dtype=float),
-            "turnViolation": np.asarray(turn_violation_values, dtype=float),
             "separationViolation": np.asarray(separation_violation_values, dtype=float),
             "collisionViolation": np.asarray(collision_violation_values, dtype=float),
             "minClearance": np.asarray(min_clearance_values, dtype=float),
@@ -506,7 +515,7 @@ def _run_fleet_pso(
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -879,7 +888,7 @@ def _run_fleet_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -988,7 +997,7 @@ def _run_fleet_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,

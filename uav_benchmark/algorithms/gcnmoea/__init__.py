@@ -9,7 +9,6 @@ Core workflow is adapted from PlatEMO GCNMOEA implementation:
 - fallback GA branch with an alternate environmental selection path.
 """
 
-import copy
 import time
 from collections import deque
 from typing import Any
@@ -28,6 +27,7 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
@@ -35,15 +35,6 @@ from uav_benchmark.core.nsga2_ops import n_d_sort, tournament_selection
 from uav_benchmark.core.nsga3_ops import uniform_point
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
-
-def _clone_candidate(candidate: Candidate, vector: np.ndarray | None = None) -> Candidate:
-    cloned_details = copy.deepcopy(candidate.details) if isinstance(candidate.details, dict) else {}
-    return Candidate(
-        vector=np.asarray(vector if vector is not None else candidate.vector, dtype=float).copy(),
-        objective=np.asarray(candidate.objective, dtype=float).copy(),
-        details=cloned_details,
-    )
 
 
 def _safe_normalize(matrix: np.ndarray) -> np.ndarray:
@@ -545,7 +536,7 @@ def _run_fleet_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.nda
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -799,11 +790,4 @@ def _run_fleet_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.nda
 
 
 def run_gcnmoea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) or int(params.fleet_size) > 1:
-        return _run_fleet_gcnmoea(model, params)
-    # Legacy-path fallback keeps benchmark compatibility for GCNMOEA names;
-    # a dedicated path-native implementation can be added later.
-    from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-    return run_nsga2(model, params)
+    return _run_fleet_gcnmoea(model, params)

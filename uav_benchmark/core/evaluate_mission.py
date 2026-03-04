@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from scipy.spatial import KDTree
 
 from uav_benchmark.core.evaluate_path import evaluate_path_details
 
@@ -84,22 +85,28 @@ def evaluate_mission_details(
     # Synchronize by normalized progress to evaluate pairwise separation.
     n_samples = int(max(20, max(path.shape[0] for path in paths_xyz) * 4))
     synced = np.stack([_resample_path(np.asarray(path, dtype=float), n_samples) for path in paths_xyz], axis=0)
-    pair_count = 0
+    
+    fleet_size, n_samples, _ = synced.shape
     violation_sum = 0.0
     min_sep = np.inf
     conflict_rows: list[list[float]] = []
-    fleet_size = synced.shape[0]
-    for i in range(fleet_size):
-        for j in range(i + 1, fleet_size):
-            pair_count += 1
-            distances = np.linalg.norm(synced[i] - synced[j], axis=1)
-            min_sep = min(min_sep, float(np.min(distances)))
-            violations = np.maximum(0.0, separation_min - distances)
-            violation_sum += float(np.sum(violations / max(separation_min, 1e-9)))
-            bad_steps = np.where(violations > 0.0)[0]
-            for step in bad_steps:
-                conflict_rows.append([float(step), float(i), float(j), float(distances[step]), float(violations[step])])
+    
+    for step in range(n_samples):
+        points = synced[:, step, :]
+        if fleet_size < 2:
+            continue
+        tree = KDTree(points)
+        indices = tree.query_ball_tree(tree, r=separation_min)
+        for i, neighbors in enumerate(indices):
+            for j in neighbors:
+                if i < j:
+                    dist = float(np.linalg.norm(points[i] - points[j]))
+                    min_sep = min(min_sep, dist)
+                    violation = max(0.0, separation_min - dist)
+                    violation_sum += float(violation / max(separation_min, 1e-9))
+                    conflict_rows.append([float(step), float(i), float(j), dist, violation])
 
+    pair_count = (fleet_size * (fleet_size - 1)) // 2
     denom = max(1, pair_count * n_samples)
     conflict_rate = float(violation_sum / denom)
     # Unified objective set with legacy-path: aggregate per-path [J1, J2, J3, J4],

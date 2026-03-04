@@ -340,7 +340,13 @@ def generate_research_plots(project_root: Path, results_dir: Path | None = None)
 
     matlab_bin = shutil.which("matlab")
     if matlab_bin is None:
-        raise RuntimeError("MATLAB executable not found in PATH.")
+        import warnings
+        warnings.warn(
+            "MATLAB not found in PATH; skipping research plots. "
+            "Install MATLAB and ensure it is on PATH to generate plots.",
+            RuntimeWarning, stacklevel=2,
+        )
+        return
 
     with tempfile.TemporaryDirectory(prefix="uav_matlab_plot_driver_") as tmp_dir:
         driver_dir = Path(tmp_dir)

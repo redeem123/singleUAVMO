@@ -12,15 +12,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 CASE_EXTRAS: dict[str, dict[str, Any]] = {
     "full": {},
-    "no_attention": {"moqgwoVariant": "no_attention"},
-    "no_atlas": {"moqgwoUseAtlas": False},
-    "standard_gwo": {"moqgwoVariant": "standard_gwo"},
+    "no_attention": {"mogwoVariant": "no_attention"},
+    # Backward-compatible alias; implementation is identical to no_attention.
+    "standard_gwo": {"mogwoVariant": "no_attention"},
 }
 
 
 def _runner_registered(benchmark_module: Any) -> bool:
     runner_map = getattr(benchmark_module, "_RUNNER_BY_NAME", {})
-    return "MOQGWO" in runner_map
+    return "MOGWO" in runner_map
 
 
 def _select_cases(raw: str) -> list[str]:
@@ -34,10 +34,15 @@ def _select_cases(raw: str) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run fair MOQGWO component ablation cases.")
-    parser.add_argument("--protocol", default=str(PROJECT_ROOT / "configs" / "moqgwo_component_ablation.yaml"), type=str)
-    parser.add_argument("--results-root", default=str(PROJECT_ROOT / "results" / "moqgwo_component_ablation"), type=str)
-    parser.add_argument("--cases", default="", type=str, help="Comma-separated subset of: full,no_attention,no_atlas,standard_gwo")
+    parser = argparse.ArgumentParser(description="Run fair MOGWO component ablation cases.")
+    parser.add_argument("--protocol", default=str(PROJECT_ROOT / "configs" / "mogwo_component_ablation.yaml"), type=str)
+    parser.add_argument("--results-root", default=str(PROJECT_ROOT / "results" / "mogwo_component_ablation"), type=str)
+    parser.add_argument(
+        "--cases",
+        default="",
+        type=str,
+        help="Comma-separated subset of: full,no_attention,standard_gwo (alias of no_attention)",
+    )
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
 
@@ -54,8 +59,8 @@ def main() -> None:
 
     if not _runner_registered(benchmark_module):
         raise RuntimeError(
-            "MOQGWO runner is not registered in this code snapshot. "
-            "Restore/add uav_benchmark.algorithms MOQGWO implementation first."
+            "MOGWO runner is not registered in this code snapshot. "
+            "Restore/add uav_benchmark.algorithms MOGWO implementation first."
         )
 
     protocol = _load_protocol(Path(args.protocol).expanduser().resolve())
@@ -63,7 +68,7 @@ def main() -> None:
     base_params.mode = "fleet"
     base_params.results_dir = Path(args.results_root).expanduser().resolve()
     base_params.extra = dict(base_params.extra)
-    base_params.extra["algorithms"] = ["MOQGWO"]
+    base_params.extra["algorithms"] = ["MOGWO"]
 
     selected_cases = _select_cases(str(args.cases))
     for case_name in selected_cases:

@@ -1,13 +1,37 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(slots=True)
 class RunDirectory:
     run_dir: Path
     problem_name: str
+
+
+def save_run_summary_json(
+    path: Path,
+    params: Any,
+    stats: dict[str, Any],
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    """Save a standardized JSON summary of a benchmark run."""
+    summary = {
+        "metadata": {
+            "algorithm": getattr(params, "algorithm", "unknown"),
+            "problem": getattr(params, "problem_name", "unknown"),
+            "fleet_size": getattr(params, "fleet_size", 1),
+            "generations": getattr(params, "generations", 0),
+            "population": getattr(params, "population", 0),
+            "seed": getattr(params, "seed", None),
+        },
+        "statistics": stats,
+        "metrics": metrics or {},
+    }
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
 def collect_run_dirs(base_dir: Path) -> list[RunDirectory]:

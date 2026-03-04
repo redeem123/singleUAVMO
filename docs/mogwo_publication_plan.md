@@ -1,4 +1,4 @@
-# MOQGWO Publication Preparation Plan
+# MOGWO Publication Preparation Plan
 
 This document captures the exact next-phase protocol for fair component ablations, complexity analysis, and corrected statistical testing.
 
@@ -8,9 +8,8 @@ Use the same mission evaluator, archive size, constraints, population, generatio
 
 Required cases:
 
-- `full`: full A2-MOQGWO.
+- `full`: full A2-MOGWO.
 - `no_attention`: same QGWO framework, but remove attention term only.
-- `no_atlas`: keep optimizer the same, disable topology/atlas archive component (`moqgwoUseAtlas=false`).
 - `standard_gwo`: standard GWO core inside the same MO wrapper (same constraint handling, archive flow, and evaluation budget).
 
 Fairness rules:
@@ -24,17 +23,16 @@ Fairness rules:
 
 Report complexity as:
 
-`T_gen = T_eval + T_update + T_archive + T_atlas`
+`T_gen = T_eval + T_update + T_archive`
 
 Interpretation target:
 
 - Attention term should be `O(N * D)` because the number of leaders is constant.
-- Atlas computation should not dominate end-to-end runtime in typical workloads.
 - Evaluation usually dominates in this repository.
 
 Empirical output requirement:
 
-- Report `%T_eval`, `%T_update`, `%T_archive`, `%T_atlas` per algorithm/problem.
+- Report `%T_eval`, `%T_update`, `%T_archive` per algorithm/problem.
 - Also report total runtime per run.
 
 Prepared helper:
@@ -72,9 +70,9 @@ Prepared helper:
 Component ablation runner template:
 
 ```bash
-python3 scripts/run_moqgwo_component_ablation.py \
-  --protocol configs/moqgwo_component_ablation.yaml \
-  --results-root results/moqgwo_component_ablation
+python3 scripts/run_mogwo_component_ablation.py \
+  --protocol configs/mogwo_component_ablation.yaml \
+  --results-root results/mogwo_component_ablation
 ```
 
 Significance and multiple-comparison correction:
@@ -82,7 +80,7 @@ Significance and multiple-comparison correction:
 ```bash
 python3 scripts/analyze_benchmark_significance.py \
   --results-dir results/full_benchmark_20260222 \
-  --control-algorithm MOQGWO \
+  --control-algorithm MOGWO \
   --pairwise-mode auto
 ```
 

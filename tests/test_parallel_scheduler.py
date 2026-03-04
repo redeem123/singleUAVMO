@@ -16,7 +16,7 @@ class ParallelSchedulerTest(unittest.TestCase):
     def test_run_parallel_guard_allows_registered_algorithms(self) -> None:
         baseline = BenchmarkParams(mode="fleet", runs=4, extra={})
         self.assertTrue(_can_parallelize_runs("NMOPSO", baseline))
-        self.assertTrue(_can_parallelize_runs("MOQGWO", baseline))
+        self.assertTrue(_can_parallelize_runs("MOGWO", baseline))
 
     def test_run_index_override_and_final_hv_skip_flag(self) -> None:
         params_default = BenchmarkParams(runs=4, extra={})
@@ -51,7 +51,7 @@ class ParallelSchedulerTest(unittest.TestCase):
         tasks = [
             (Path("a"), 1, "NMOPSO", params_baseline),
             (Path("b"), 2, "NSGA-II", params_baseline),
-            (Path("c"), 3, "MOQGWO", params_baseline),
+            (Path("c"), 3, "MOGWO", params_baseline),
         ]
         self.assertEqual(_max_parallel_worker_slots(tasks), 12)
 

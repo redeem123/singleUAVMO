@@ -48,7 +48,6 @@ class RunRecord:
     runtime_sec: float
     min_clearance: float
     max_turn_deg: float
-    turn_exceed_rate: float
     mission_conflict_rate: float
     mission_min_separation: float
     mission_makespan: float
@@ -338,7 +337,6 @@ def _summarize_group(records: list[RunRecord]) -> dict[str, Any]:
     success_values = np.asarray([record.run_success for record in records], dtype=float)
     min_clearance_values = np.asarray([record.min_clearance for record in records], dtype=float)
     max_turn_values = np.asarray([record.max_turn_deg for record in records], dtype=float)
-    turn_exceed_values = np.asarray([record.turn_exceed_rate for record in records], dtype=float)
     mission_conflict_values = np.asarray([record.mission_conflict_rate for record in records], dtype=float)
     mission_min_sep_values = np.asarray([record.mission_min_separation for record in records], dtype=float)
     mission_makespan_values = np.asarray([record.mission_makespan for record in records], dtype=float)
@@ -374,7 +372,6 @@ def _summarize_group(records: list[RunRecord]) -> dict[str, Any]:
         if np.any(np.isfinite(max_turn_values))
         else float("nan"),
         "max_turn_deg_median": _median(max_turn_values),
-        "turn_exceed_rate_mean": _mean(turn_exceed_values),
         "mission_conflict_rate_mean": _mean(mission_conflict_values),
         "mission_conflict_rate_std": _std(mission_conflict_values),
         "mission_min_separation_min": float(np.min(mission_min_sep_values[np.isfinite(mission_min_sep_values)]))
@@ -409,7 +406,7 @@ def _to_serializable(value: Any) -> Any:
 
 
 def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
-    np.random.seed(config.seed)
+    rng = np.random.default_rng(config.seed)  # noqa: F841 — reserved for downstream sampling
     results_dir = config.results_dir.resolve()
     project_root = config.project_root.resolve()
     output_dir = (config.output_dir or (results_dir / "metrics")).resolve()
@@ -472,11 +469,9 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
         mission_makespan = _load_mission_metric(run_dir, "makespan")
         mission_energy = _load_mission_metric(run_dir, "energy")
         mission_max_turn = _load_mission_metric(run_dir, "maxTurnDeg")
-        mission_turn_violation = _load_mission_metric(run_dir, "turnViolation")
 
         min_clearances: list[float] = []
         max_turns: list[float] = []
-        turn_limit_deg = float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0))) if model else 75.0
         for index, is_feasible in enumerate(feasible_mask, start=1):
             if not bool(is_feasible):
                 continue
@@ -488,13 +483,8 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
             max_turns.append(_path_max_turn_deg(path_xyz))
         min_clearance = float(np.min(min_clearances)) if min_clearances else float("nan")
         max_turn_deg = float(np.max(max_turns)) if max_turns else float("nan")
-        turn_exceed_rate = (
-            float(np.mean(np.asarray(max_turns, dtype=float) > turn_limit_deg)) if max_turns else float("nan")
-        )
         if np.isfinite(mission_max_turn):
             max_turn_deg = float(mission_max_turn)
-        if np.isfinite(mission_turn_violation):
-            turn_exceed_rate = float(mission_turn_violation)
 
         records.append(
             RunRecord(
@@ -509,7 +499,6 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
                 runtime_sec=runtime_sec,
                 min_clearance=min_clearance,
                 max_turn_deg=max_turn_deg,
-                turn_exceed_rate=turn_exceed_rate,
                 mission_conflict_rate=mission_conflict_rate,
                 mission_min_separation=mission_min_separation,
                 mission_makespan=mission_makespan,

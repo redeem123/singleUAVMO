@@ -164,7 +164,7 @@ def _run_fleet_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -306,11 +306,4 @@ def _run_fleet_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
 
 def run_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) or int(params.fleet_size) > 1:
-        return _run_fleet_smpso(model, params)
-    # Legacy-path fallback keeps benchmark compatibility for SMPSO names;
-    # a dedicated path-native SMPSO variant can be added later.
-    from uav_benchmark.algorithms.mopso import run_mopso
-
-    return run_mopso(model, params)
+    return _run_fleet_smpso(model, params)

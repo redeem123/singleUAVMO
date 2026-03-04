@@ -1,24 +1,32 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-import time
 
 from uav_benchmark.config import BenchmarkParams
-from uav_benchmark.algorithms.shared.mission_stats import build_mission_stats
-from uav_benchmark.core.evaluate_path import evaluate_path
+from uav_benchmark.algorithms.shared.fleet_runner import (
+    _build_bounds,
+    _ensure_fleet_endpoints,
+    _evaluate_population,
+    _resolve_run_indices,
+    _resume_run_scores,
+    _save_fleet_artifacts,
+    _should_write_final_hv,
+)
+from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort, tournament_selection
-from uav_benchmark.io.matlab import save_bp, save_mat, save_run_popobj
+from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
 
 
 @dataclass(slots=True)
 class MTIndividual:
-    decision: np.ndarray
+    vector: np.ndarray
     objective: np.ndarray
     task_id: int
 
@@ -39,72 +47,29 @@ def _build_aux_model(model: dict[str, Any], params: BenchmarkParams) -> dict[str
     return aux_model
 
 
-def _decode_uav_path(norm_decision: np.ndarray, model: dict[str, Any], n_control: int) -> np.ndarray:
-    n_control = max(3, int(round(n_control)))
-    n_mid = n_control - 2
-    needed = 3 * n_mid
-    decision = np.asarray(norm_decision, dtype=float).reshape(-1)
-    if decision.size < needed:
-        decision = np.hstack([decision, np.full(needed - decision.size, 0.5, dtype=float)])
-    elif decision.size > needed:
-        decision = decision[:needed]
-    mid = decision.reshape(n_mid, 3)
-    mid = np.clip(mid, 0.0, 1.0)
-    x_coord = float(model["xmin"]) + mid[:, 0] * (float(model["xmax"]) - float(model["xmin"]))
-    y_coord = float(model["ymin"]) + mid[:, 1] * (float(model["ymax"]) - float(model["ymin"]))
-    z_alpha = mid[:, 2]
-    order = np.argsort(x_coord, kind="mergesort")
-    x_coord = x_coord[order]
-    y_coord = y_coord[order]
-    z_alpha = z_alpha[order]
-
-    safe_h = float(model.get("safeH", 0.0))
-    z_coord = np.zeros(n_mid, dtype=float)
-    for index in range(n_mid):
-        xi = int(np.clip(round(x_coord[index]), 1, np.asarray(model["H"]).shape[1])) - 1
-        yi = int(np.clip(round(y_coord[index]), 1, np.asarray(model["H"]).shape[0])) - 1
-        ground = float(np.asarray(model["H"], dtype=float)[yi, xi])
-        min_z = max(float(model["zmin"]), ground + safe_h)
-        max_z = float(model["zmax"])
-        z_coord[index] = min_z if max_z <= min_z else min_z + z_alpha[index] * (max_z - min_z)
-
-    path = np.zeros((n_control, 3), dtype=float)
-    path[0] = np.asarray(model["start"], dtype=float).reshape(-1)[:3]
-    path[-1] = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
-    path[1:-1] = np.column_stack([x_coord, y_coord, z_coord])
-    path[:, 0] = np.clip(path[:, 0], float(model["xmin"]), float(model["xmax"]))
-    path[:, 1] = np.clip(path[:, 1], float(model["ymin"]), float(model["ymax"]))
-    path[:, 2] = np.clip(path[:, 2], float(model["zmin"]), float(model["zmax"]))
-    return path
-
-
-def _evaluate_task(decision: np.ndarray, task_id: int, model: dict[str, Any], aux_model: dict[str, Any], n_control: int) -> np.ndarray:
+def _evaluate_task_candidates(
+    vectors: np.ndarray,
+    task_id: int,
+    model: dict[str, Any],
+    aux_model: dict[str, Any],
+    fleet_size: int,
+    n_waypoints: int,
+) -> list[Candidate]:
+    """Evaluate a batch of decision vectors for a given task using the canonical fleet evaluator."""
     active_model = model if task_id == 2 else aux_model
-    path = _decode_uav_path(decision, active_model, n_control)
-    objective = evaluate_path(path, active_model)
-    if np.any(~np.isfinite(objective)):
-        return np.full(4, np.inf, dtype=float)
-    return objective
-
-
-def _initialize_population(model: dict[str, Any], aux_model: dict[str, Any], n_control: int, pop_size: int) -> list[MTIndividual]:
-    n_var = 3 * (n_control - 2)
-    population = []
-    for _ in range(pop_size):
-        decision = np.random.rand(n_var)
-        task_id = int(np.random.choice([1, 2]))
-        objective = _evaluate_task(decision, task_id, model, aux_model, n_control)
-        population.append(MTIndividual(decision=decision, objective=objective, task_id=task_id))
-    return population
+    return _evaluate_population(vectors, active_model, fleet_size=fleet_size, n_waypoints=n_waypoints)
 
 
 def _make_offspring(
     population: list[MTIndividual],
     model: dict[str, Any],
     aux_model: dict[str, Any],
-    n_control: int,
+    fleet_size: int,
+    n_waypoints: int,
     crossover_rate: float,
     mutation_std: float,
+    lower: np.ndarray,
+    upper: np.ndarray,
 ) -> list[MTIndividual]:
     pop_obj = np.array([item.objective for item in population], dtype=float)
     front_no, _ = n_d_sort(pop_obj.copy(), None, len(population))
@@ -113,33 +78,23 @@ def _make_offspring(
     for pair_index in range(0, len(mating_pool), 2):
         p1 = population[int(mating_pool[pair_index])]
         p2 = population[int(mating_pool[(pair_index + 1) % len(mating_pool)])]
-        alpha = np.random.rand(p1.decision.shape[0])
+        alpha = np.random.rand(p1.vector.shape[0])
         if np.random.rand() < crossover_rate:
-            child_decision = alpha * p1.decision + (1.0 - alpha) * p2.decision
+            child_vec = alpha * p1.vector + (1.0 - alpha) * p2.vector
         else:
-            child_decision = p1.decision.copy()
-        child_decision += np.random.randn(*child_decision.shape) * mutation_std
-        child_decision = np.clip(child_decision, 0.0, 1.0)
+            child_vec = p1.vector.copy()
+        child_vec += np.random.randn(*child_vec.shape) * mutation_std * (upper - lower)
+        child_vec = np.clip(child_vec, lower, upper)
         if p1.task_id == p2.task_id:
             child_task = p1.task_id
         else:
             child_task = int(np.random.choice([p1.task_id, p2.task_id]))
-        child_objective = _evaluate_task(child_decision, child_task, model, aux_model, n_control)
-        offspring.append(MTIndividual(decision=child_decision, objective=child_objective, task_id=child_task))
+        offspring.append(MTIndividual(vector=child_vec, objective=np.full(4, np.inf), task_id=child_task))
     return offspring
 
 
-def _select_target_task(population: list[MTIndividual], objective_count: int) -> tuple[np.ndarray, np.ndarray]:
-    target = [individual for individual in population if individual.task_id == 2]
-    if not target:
-        target = population
-    pop_dec = np.array([np.hstack([individual.decision, individual.task_id]) for individual in target], dtype=float)
-    pop_obj = np.array([individual.objective[:objective_count] for individual in target], dtype=float)
-    return pop_dec, pop_obj
-
-
 def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_name: str) -> np.ndarray:
-    """Core MO-MFEA runner.
+    """Core MO-MFEA runner using the canonical fleet evaluator.
 
     When ``algorithm_name`` is ``"MOMFEAII"``, adaptive Random Mating
     Probability (RMP) is used: the crossover rate decays over generations
@@ -149,23 +104,94 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
     use_adaptive = algorithm_name.upper().replace("-", "") in {"MOMFEAII", "MOMFEA2"}
     objective_count = 4
     model = dict(model)
-    model["n"] = 10
-    n_control = int(model["n"])
+    n_waypoints = int(model.get("n", 10))
+    requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
+    seed_value = int(params.seed) if params.seed is not None else 42
+
+    model, fleet_size = _ensure_fleet_endpoints(
+        model=model,
+        fleet_size=requested_fleet,
+        seed=seed_value + requested_fleet,
+        separation_min=float(params.separation_min),
+    )
+    model["maxTurnDeg"] = float(params.max_turn_deg)
+    model["hardCollisionConstraint"] = True
     aux_model = _build_aux_model(model, params)
+
+    lower, upper = _build_bounds(model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+    dim = lower.size
+
     results_path = params.results_dir / params.problem_name
     ensure_dir(results_path)
-    run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+    run_scores = (
+        np.zeros((params.runs, 2), dtype=float)
+        if params.compute_metrics
+        else np.zeros((0, 2), dtype=float)
+    )
 
     crossover_rate = float(params.extra.get("mfeaRMP", 0.9))
     mutation_std = float(params.extra.get("mfeaMutationStd", 0.05))
     max_fe = int(params.extra.get("maxFE", params.population * (params.generations + 1)))
     generations = max(1, max_fe // max(1, params.population))
+    metric_interval = int(params.extra.get("metricInterval", 20))
 
-    for run_index in range(1, params.runs + 1):
+    run_indices = _resolve_run_indices(params)
+    resume_existing = bool(params.extra.get("resumeExistingRuns", True))
+
+    for run_idx in run_indices:
         run_start = time.perf_counter()
-        population = _initialize_population(model, aux_model, n_control, params.population)
-        for gen in range(generations):
-            # MO-MFEA-II: adaptive RMP — crossover rate decays, mutation grows
+        run_dir = results_path / f"Run_{run_idx}"
+
+        if resume_existing:
+            resumed = _resume_run_scores(
+                run_dir=run_dir,
+                problem_index=params.problem_index,
+                objective_count=objective_count,
+                compute_metrics=params.compute_metrics,
+            )
+            if resumed is not None:
+                if params.compute_metrics:
+                    run_scores[run_idx - 1] = resumed
+                continue
+
+        # ── Initialize population ──────────────────────────────────────
+        pop_size = params.population
+        init_vectors = np.random.uniform(lower, upper, size=(pop_size, dim))
+        init_task_ids = np.random.choice([1, 2], size=pop_size)
+
+        # Evaluate task-2 (primary) and task-1 (auxiliary) individuals separately
+        task2_mask = init_task_ids == 2
+        task1_mask = ~task2_mask
+
+        pop_cands_t2 = _evaluate_task_candidates(
+            init_vectors[task2_mask], 2, model, aux_model, fleet_size, n_waypoints
+        ) if np.any(task2_mask) else []
+        pop_cands_t1 = _evaluate_task_candidates(
+            init_vectors[task1_mask], 1, model, aux_model, fleet_size, n_waypoints
+        ) if np.any(task1_mask) else []
+
+        population: list[MTIndividual] = []
+        t2_iter = iter(pop_cands_t2)
+        t1_iter = iter(pop_cands_t1)
+        for i in range(pop_size):
+            if init_task_ids[i] == 2:
+                cand = next(t2_iter)
+            else:
+                cand = next(t1_iter)
+            population.append(MTIndividual(
+                vector=init_vectors[i].copy(),
+                objective=cand.objective.copy(),
+                task_id=int(init_task_ids[i]),
+            ))
+
+        hv_hist = (
+            np.zeros((generations, 2), dtype=float)
+            if params.compute_metrics
+            else np.zeros((0, 2), dtype=float)
+        )
+
+        # ── Generation loop ────────────────────────────────────────────
+        for gen in range(1, generations + 1):
             if use_adaptive:
                 progress = gen / max(1, generations - 1)
                 gen_crossover = crossover_rate * (1.0 - 0.5 * progress)
@@ -174,62 +200,92 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
                 gen_crossover = crossover_rate
                 gen_mutation = mutation_std
 
-            offspring = _make_offspring(population, model, aux_model, n_control, gen_crossover, gen_mutation)
+            offspring = _make_offspring(
+                population, model, aux_model, fleet_size, n_waypoints,
+                gen_crossover, gen_mutation, lower, upper,
+            )
+
+            # Evaluate offspring with their assigned task
+            off_t2 = [(i, o) for i, o in enumerate(offspring) if o.task_id == 2]
+            off_t1 = [(i, o) for i, o in enumerate(offspring) if o.task_id == 1]
+
+            if off_t2:
+                vecs_t2 = np.stack([o.vector for _, o in off_t2])
+                cands_t2 = _evaluate_task_candidates(vecs_t2, 2, model, aux_model, fleet_size, n_waypoints)
+                for (idx, _), cand in zip(off_t2, cands_t2):
+                    offspring[idx].objective = cand.objective.copy()
+
+            if off_t1:
+                vecs_t1 = np.stack([o.vector for _, o in off_t1])
+                cands_t1 = _evaluate_task_candidates(vecs_t1, 1, model, aux_model, fleet_size, n_waypoints)
+                for (idx, _), cand in zip(off_t1, cands_t1):
+                    offspring[idx].objective = cand.objective.copy()
+
             merged = population + offspring
             merged_obj = np.array([item.objective for item in merged], dtype=float)
-            front_no, _ = n_d_sort(merged_obj.copy(), None, params.population)
+            front_no, _ = n_d_sort(merged_obj.copy(), None, pop_size)
             order = np.argsort(front_no, kind="mergesort")
-            population = [merged[index] for index in order[: params.population]]
+            population = [merged[index] for index in order[:pop_size]]
 
-        pop_dec, pop_obj = _select_target_task(population, objective_count)
-        run_dir = results_path / f"Run_{run_index}"
+            if params.compute_metrics and hv_hist.shape[0] > 0:
+                target = [ind for ind in population if ind.task_id == 2]
+                if target:
+                    t_obj = np.array([ind.objective for ind in target], dtype=float)
+                    if gen == 1 or gen == generations or gen % metric_interval == 0:
+                        hv_hist[gen - 1, 0] = cal_metric(1, t_obj, params.problem_index, objective_count)
+                        hv_hist[gen - 1, 1] = cal_metric(2, t_obj, params.problem_index, objective_count)
+                    elif gen > 1:
+                        hv_hist[gen - 1] = hv_hist[gen - 2]
+
+        # ── Finalize run ───────────────────────────────────────────────
+        target_population = [ind for ind in population if ind.task_id == 2]
+        if not target_population:
+            target_population = population
+
+        # Re-evaluate final population with primary model to get Candidate objects
+        final_vecs = np.stack([ind.vector for ind in target_population])
+        final_candidates = _evaluate_task_candidates(
+            final_vecs, 2, model, aux_model, fleet_size, n_waypoints
+        )
+
         ensure_dir(run_dir)
-        save_run_popobj(run_dir / "final_popobj.mat", pop_obj, params.problem_index, objective_count)
-        saved_paths: list[np.ndarray] = []
-        for solution_index in range(pop_obj.shape[0]):
-            path = _decode_uav_path(pop_dec[solution_index, :-1], model, n_control)
-            saved_paths.append(np.asarray(path, dtype=float))
-            save_bp(run_dir / f"bp_{solution_index + 1}.mat", path, pop_obj[solution_index])
-        if saved_paths:
-            finite_cost = np.where(np.isfinite(pop_obj), pop_obj, 1e9)
-            best_idx = int(np.argmin(np.sum(finite_cost, axis=1)))
-            save_mat(run_dir / "fleet_paths.mat", {"uav1": np.asarray(saved_paths[best_idx], dtype=float)})
-        mission_stats, feasible_mask = build_mission_stats(saved_paths, model)
-        save_mat(run_dir / "mission_stats.mat", mission_stats)
-        save_mat(
-            run_dir / "run_stats.mat",
-            {
-                "runtimeSec": float(time.perf_counter() - run_start),
-                "feasibleCount": int(np.sum(feasible_mask)),
-                "solutionCount": int(pop_obj.shape[0]),
+        if params.compute_metrics and hv_hist.shape[0] > 0:
+            save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_hist})
+
+        _save_fleet_artifacts(
+            run_dir=run_dir,
+            final_candidates=final_candidates,
+            problem_index=params.problem_index,
+            objective_count=objective_count,
+            runtime_sec=float(time.perf_counter() - run_start),
+            gpu_backend="numpy:cpu",
+            gpu_peak_bytes=0.0,
+            run_metadata={
+                "algorithmName": algorithm_name,
+                "representation": "cart",
+                "requestedPopulation": float(params.population),
+                "effectivePopulation": float(len(target_population)),
             },
         )
+
         if params.compute_metrics:
-            run_scores[run_index - 1] = np.array(
+            final_obj = _candidate_matrix(final_candidates)
+            run_scores[run_idx - 1] = np.array(
                 [
-                    cal_metric(1, pop_obj, params.problem_index, objective_count),
-                    cal_metric(2, pop_obj, params.problem_index, objective_count),
+                    cal_metric(1, final_obj, params.problem_index, objective_count),
+                    cal_metric(2, final_obj, params.problem_index, objective_count),
                 ],
                 dtype=float,
             )
-    if params.compute_metrics:
+
+    if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
 
 
 def run_momfea(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) and int(params.fleet_size) > 1:
-        from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-        return run_nsga2(model, params)
     return run_momfea_core(model, params, "MOMFEA")
 
 
 def run_momfea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) and int(params.fleet_size) > 1:
-        from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-        return run_nsga2(model, params)
     return run_momfea_core(model, params, "MOMFEAII")

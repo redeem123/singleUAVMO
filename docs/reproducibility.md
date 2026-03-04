@@ -34,7 +34,7 @@ python3 -m uav_benchmark.cli paper-artifacts \
 ## Smoke Validation
 
 ```bash
-python3 -m uav_benchmark.cli benchmark-fleet \
+python3 -m uav_benchmark.cli benchmark \
   --project-root . \
   --results-dir results/smoke_fleet \
   --protocol configs/smoke_fleet.yaml \
@@ -48,19 +48,19 @@ python3 -m uav_benchmark.cli benchmark-fleet \
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-## MOQGWO Next Phase Helpers
+## MOGWO Next Phase Helpers
 
 Template protocol and plan:
 
-- `configs/moqgwo_component_ablation.yaml`
-- `docs/moqgwo_publication_plan.md`
+- `configs/mogwo_component_ablation.yaml`
+- `docs/mogwo_publication_plan.md`
 
 Significance analysis (Wilcoxon/rank-sum + Holm + Cliff + Friedman):
 
 ```bash
 python3 scripts/analyze_benchmark_significance.py \
   --results-dir results/full_benchmark_20260222 \
-  --control-algorithm MOQGWO \
+  --control-algorithm MOGWO \
   --pairwise-mode auto
 ```
 

@@ -34,7 +34,7 @@ class SingleUavStatsTest(unittest.TestCase):
         self.assertEqual(feasible_mask.tolist(), [True, False])
         self.assertEqual(np.asarray(mission_stats["collisionViolation"], dtype=float).tolist(), [0.0, 1.0])
 
-    def test_turn_violation_is_reported_but_not_hard_infeasible(self) -> None:
+    def test_turn_is_soft_penalty_and_not_reported_as_violation_flag(self) -> None:
         model = _base_model()
         model["maxTurnDeg"] = 45.0
         smooth_path = np.array([[1.0, 1.0, 15.0], [10.0, 10.0, 15.0], [20.0, 20.0, 15.0]], dtype=float)
@@ -43,7 +43,9 @@ class SingleUavStatsTest(unittest.TestCase):
         mission_stats, feasible_mask = build_mission_stats([smooth_path, sharp_turn], model)
 
         self.assertEqual(feasible_mask.tolist(), [True, True])
-        self.assertEqual(np.asarray(mission_stats["turnViolation"], dtype=float).tolist(), [0.0, 1.0])
+        self.assertNotIn("turnViolation", mission_stats)
+        max_turn = np.asarray(mission_stats["maxTurnDeg"], dtype=float).tolist()
+        self.assertGreater(max_turn[1], max_turn[0])
 
 
 if __name__ == "__main__":

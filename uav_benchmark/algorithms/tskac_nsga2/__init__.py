@@ -210,17 +210,13 @@ def _apply_action(
 
 
 def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if use_legacy_runner and int(params.fleet_size) <= 1:
-        from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-        return run_nsga2(model, params)
-
+    # TSKAC-NSGA-II always runs its own implementation.
+    # legacyPathRunner is not supported for TSKAC-NSGA-II.
     objective_count = 4
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,

@@ -9,7 +9,6 @@ Core workflow is adapted from PlatEMO's MFO-SPEA2 implementation:
 - SPEA2-style environmental selection for both tasks.
 """
 
-import copy
 import time
 from typing import Any
 
@@ -27,47 +26,13 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate, _sanitize_objectives, _pairwise_distance
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import tournament_selection
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
-
-def _clone_candidate(candidate: Candidate, vector: np.ndarray | None = None) -> Candidate:
-    cloned_details = copy.deepcopy(candidate.details) if isinstance(candidate.details, dict) else {}
-    return Candidate(
-        vector=np.asarray(vector if vector is not None else candidate.vector, dtype=float).copy(),
-        objective=np.asarray(candidate.objective, dtype=float).copy(),
-        details=cloned_details,
-    )
-
-
-def _sanitize_objectives(pop_obj: np.ndarray) -> np.ndarray:
-    matrix = np.asarray(pop_obj, dtype=float)
-    if matrix.size == 0:
-        return matrix.reshape(0, 0)
-    finite_mask = np.isfinite(matrix)
-    if np.all(finite_mask):
-        return matrix
-    col_max = np.zeros(matrix.shape[1], dtype=float)
-    for col in range(matrix.shape[1]):
-        col_values = matrix[finite_mask[:, col], col]
-        if col_values.size > 0:
-            col_max[col] = float(np.max(col_values))
-    penalties = np.sum(~finite_mask, axis=1, keepdims=True).astype(float)
-    replacement = col_max.reshape(1, -1) + 1e6 + penalties
-    return np.where(finite_mask, matrix, replacement)
-
-
-def _pairwise_distance(pop_obj: np.ndarray) -> np.ndarray:
-    if pop_obj.size == 0:
-        return np.zeros((0, 0), dtype=float)
-    diff = pop_obj[:, np.newaxis, :] - pop_obj[np.newaxis, :, :]
-    distance = np.linalg.norm(diff, axis=2)
-    np.fill_diagonal(distance, np.inf)
-    return distance
 
 
 def _cal_fitness(pop_obj: np.ndarray, pop_con: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -204,7 +169,7 @@ def _run_fleet_mfo_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.n
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -339,11 +304,4 @@ def _run_fleet_mfo_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.n
 
 
 def run_mfo_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) or int(params.fleet_size) > 1:
-        return _run_fleet_mfo_spea2(model, params)
-    # Legacy-path fallback keeps benchmark compatibility for MFO-SPEA2 names;
-    # a dedicated path-native version can be added later.
-    from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-    return run_nsga2(model, params)
+    return _run_fleet_mfo_spea2(model, params)

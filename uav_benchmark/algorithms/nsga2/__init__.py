@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from uav_benchmark.config import BenchmarkParams
-from uav_benchmark.algorithms.shared.fleet_runner import run_fleet_nsga2
+from uav_benchmark.algorithms.shared.fleet_runner import run_fleet_nsga2, _resolve_run_indices
 from uav_benchmark.algorithms.shared.mission_stats import build_mission_stats
 from uav_benchmark.core.chromosome import Chromosome
 from uav_benchmark.core.metrics import cal_metric
@@ -36,7 +36,7 @@ def run_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
     use_constraints = bool(params.extra.get("useConstraints", False))
 
-    for run_index in range(1, params.runs + 1):
+    for run_index in _resolve_run_indices(params):
         run_score = _nsga2_legacy_run(
             model=model,
             params=params,
@@ -90,7 +90,8 @@ def _nsga2_legacy_run(
 
         if params.compute_metrics:
             objective_matrix = np.array([candidate.objs for candidate in population], dtype=float)
-            if generation == 1 or generation == params.generations or generation % 50 == 0:
+            metric_interval = int(params.extra.get("metricInterval", 20))
+            if generation == 1 or generation == params.generations or generation % metric_interval == 0:
                 hv_history[generation - 1, 0] = cal_metric(1, objective_matrix, params.problem_index, objective_count)
                 hv_history[generation - 1, 1] = cal_metric(2, objective_matrix, params.problem_index, objective_count)
             elif generation > 1:
@@ -114,14 +115,15 @@ def _nsga2_legacy_run(
     mission_stats, feasible_mask = build_mission_stats(saved_paths, model)
     save_mat(run_dir / "mission_stats.mat", mission_stats)
     feasible_count = int(np.sum(feasible_mask))
-    save_mat(
-        run_dir / "run_stats.mat",
-        {
-            "runtimeSec": float(time.perf_counter() - run_start),
-            "feasibleCount": feasible_count,
-            "solutionCount": int(objective_matrix.shape[0]),
-        },
-    )
+    run_stats = {
+        "runtimeSec": float(time.perf_counter() - run_start),
+        "feasibleCount": feasible_count,
+        "solutionCount": int(objective_matrix.shape[0]),
+    }
+    save_mat(run_dir / "run_stats.mat", run_stats)
+
+    from uav_benchmark.io.results import save_run_summary_json
+    save_run_summary_json(run_dir / "run_summary.json", params, run_stats)
 
     if not params.compute_metrics:
         return np.zeros(0, dtype=float)

@@ -7,7 +7,6 @@ Core decomposition flow is inherited from the PlatEMO MOEAD implementation
 this repository's fleet constrained evaluation and artifact pipeline.
 """
 
-import copy
 import time
 from typing import Any
 
@@ -34,13 +33,7 @@ from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
 
 
-def _clone_candidate(candidate: Candidate, vector: np.ndarray | None = None) -> Candidate:
-    cloned_details = copy.deepcopy(candidate.details) if isinstance(candidate.details, dict) else {}
-    return Candidate(
-        vector=np.asarray(vector if vector is not None else candidate.vector, dtype=float).copy(),
-        objective=np.asarray(candidate.objective, dtype=float).copy(),
-        details=cloned_details,
-    )
+from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate
 
 
 def _update_ideal_point(ideal: np.ndarray, objective: np.ndarray) -> np.ndarray:
@@ -138,7 +131,7 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     model = dict(model)
     n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 42
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
         fleet_size=requested_fleet,
@@ -156,6 +149,14 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
     weights, adjusted_population = uniform_point(int(params.population), objective_count, method)
     pop_size = int(adjusted_population)
+    if pop_size != int(params.population):
+        import logging
+        logging.getLogger(__name__).warning(
+            "MOEAD: NBI weight generation adjusted population size %d → %d "
+            "(4-objective NBI simplex constraint). Pass moeadWeightMethod='LATIN' "
+            "in extra for exact population control.",
+            int(params.population), pop_size,
+        )
     weights = np.maximum(np.asarray(weights, dtype=float), 1e-6)
     if weights.shape[0] != pop_size:
         weights = weights[:pop_size]
@@ -264,11 +265,4 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
 
 def run_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    use_legacy_runner = bool(params.extra.get("legacyPathRunner", False))
-    if (not use_legacy_runner) or int(params.fleet_size) > 1:
-        return _run_fleet_moead(model, params)
-    # Legacy-path fallback keeps compatibility; a dedicated path-native MOEA/D
-    # can be added later using the same decomposition core.
-    from uav_benchmark.algorithms.nsga2 import run_nsga2
-
-    return run_nsga2(model, params)
+    return _run_fleet_moead(model, params)

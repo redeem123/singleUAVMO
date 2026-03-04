@@ -28,3 +28,6 @@ results/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Testing
+.hypothesis/

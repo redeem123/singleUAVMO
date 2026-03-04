@@ -353,7 +353,7 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
     n_init   = max(8, int(params.population))
     n_min    = max(4, min(n_init // 4, 16))
     max_gen  = int(params.generations)
-    arc_size = int(params.extra.get("nRep", max(n_init, 100)))
+    arc_size = int(params.extra.get("nRep", n_init))
     metric_interval = int(params.extra.get("metricInterval", 20))
     ext_arc_cap = int(n_init * _ARC_RATIO)
 
@@ -385,8 +385,17 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
                     run_scores[run_idx - 1] = resumed
                 continue
 
-        # ── Seed RNG ─────────────────────────────────────────────────
-        np.random.seed(seed_value * 1000 + run_idx)
+        # ── Budget tracking ───────────────────────────────────────────
+        # Total budget = population × (generations + 1): one initial eval +
+        # one eval per generation × population.  OBL evaluates 2×n which counts
+        # against budget; elite local-search offspring count as well.
+        _total_budget = n_init * (max_gen + 1)
+        _evals_used = 0
+
+        def _bounded_eval(matrix: np.ndarray, remaining: int) -> list[Candidate]:
+            if remaining <= 0 or matrix.shape[0] == 0:
+                return []
+            return _evaluate_population(matrix[:remaining], model, fleet_size, n_waypoints)
 
         # ── OBL Initialisation ────────────────────────────────────────
         n   = n_init
@@ -394,7 +403,15 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
         obl = _obl_population(pop, lower, upper)
         init_pool = np.vstack([pop, obl])   # 2n candidates
 
-        init_cands  = _evaluate_population(init_pool,  model, fleet_size, n_waypoints)
+        init_cands  = _bounded_eval(init_pool, _total_budget - _evals_used)
+        _evals_used += len(init_cands)
+        # Pad with fallback entries if budget was exhausted before evaluating all
+        while len(init_cands) < init_pool.shape[0]:
+            init_cands.append(Candidate(
+                vector=init_pool[len(init_cands)],
+                objective=np.full(4, np.inf, dtype=float),
+                details={"feasible": 0.0},
+            ))
         init_obj    = _candidate_matrix(init_cands)
         init_cv     = _constraint_violation_vector(init_cands, model)
 
@@ -423,6 +440,9 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
 
         # ── Generation Loop ───────────────────────────────────────────
         for gen in range(1, max_gen + 1):
+            if _evals_used >= _total_budget:
+                break
+
             n_new = _lshade_n(gen, max_gen, n_init, n_min)
 
             # Sample adaptive F, CR
@@ -441,8 +461,17 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
                 if ls_vecs.shape[0] > 0:
                     trials = np.vstack([trials, ls_vecs])
 
-            # Evaluate
-            trial_cands = _evaluate_population(trials, model, fleet_size, n_waypoints)
+            # Evaluate — capped to remaining budget
+            remaining = _total_budget - _evals_used
+            trial_cands = _bounded_eval(trials, remaining)
+            _evals_used += len(trial_cands)
+            # Pad infeasible entries for any trials that exceeded budget
+            while len(trial_cands) < trials.shape[0]:
+                trial_cands.append(Candidate(
+                    vector=trials[len(trial_cands)],
+                    objective=np.full(4, np.inf, dtype=float),
+                    details={"feasible": 0.0},
+                ))
             trial_obj   = _candidate_matrix(trial_cands)
             trial_cv    = _constraint_violation_vector(trial_cands, model)
 

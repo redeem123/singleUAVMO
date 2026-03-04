@@ -412,7 +412,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Publication-grade significance testing on benchmark results.")
     parser.add_argument("--results-dir", required=True, type=str)
     parser.add_argument("--output-dir", default="", type=str)
-    parser.add_argument("--control-algorithm", default="MOQGWO", type=str)
+    parser.add_argument("--control-algorithm", default="MOGWO", type=str)
     parser.add_argument("--pairwise-mode", choices=("auto", "paired", "unpaired"), default="auto", type=str)
     parser.add_argument("--min-paired", default=3, type=int)
     parser.add_argument("--metrics", default="", type=str)

@@ -25,7 +25,6 @@ def build_fleet_mission_stats(
     energy_values = np.full(solution_count, np.nan, dtype=float)
     risk_values = np.full(solution_count, np.nan, dtype=float)
     max_turn_values = np.full(solution_count, np.nan, dtype=float)
-    turn_violation_values = np.zeros(solution_count, dtype=float)
     separation_violation_values = np.zeros(solution_count, dtype=float)
     collision_violation_values = np.zeros(solution_count, dtype=float)
     min_clearance_values = np.full(solution_count, np.nan, dtype=float)
@@ -45,7 +44,6 @@ def build_fleet_mission_stats(
         energy_values[index] = float(details.get("energy", np.nan))
         risk_values[index] = float(details.get("risk", np.nan))
         max_turn_values[index] = float(details.get("maxTurnDeg", np.nan))
-        turn_violation_values[index] = float(details.get("turnViolation", 0.0))
         separation_violation_values[index] = float(separation_violation)
         collision_violation_values[index] = float(collision_violation)
         min_clearance_values[index] = float(details.get("minClearance", np.nan))
@@ -61,7 +59,6 @@ def build_fleet_mission_stats(
         "energy": energy_values,
         "risk": risk_values,
         "maxTurnDeg": max_turn_values,
-        "turnViolation": turn_violation_values,
         "separationViolation": separation_violation_values,
         "collisionViolation": collision_violation_values,
         "minClearance": min_clearance_values,

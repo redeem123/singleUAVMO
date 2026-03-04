@@ -42,6 +42,19 @@ class AlgorithmRegistrationTest(unittest.TestCase):
         only = [name for name, _runner in _algorithm_map(("GCNMOEA",))]
         self.assertEqual(only, ["GCNMOEA"])
 
+    def test_mogwo_name_normalization(self) -> None:
+        self.assertEqual(_normalize_algorithm_name("mogwo"), "MOGWO")
+        self.assertEqual(_normalize_algorithm_name("a2mogwo"), "MOGWO")
+        self.assertEqual(_normalize_algorithm_name("mogwo-standard-gwo"), "MOGWO-NO-ATTENTION")
+
+    def test_mogwo_registered_in_algorithm_map(self) -> None:
+        names = [name for name, _runner in _algorithm_map()]
+        self.assertIn("MOGWO", names)
+        self.assertIn("MOGWO-NO-ATTENTION", names)
+
+        only = [name for name, _runner in _algorithm_map(("MOGWO", "MOGWO-NO-ATTENTION"))]
+        self.assertEqual(only, ["MOGWO", "MOGWO-NO-ATTENTION"])
+
 
 if __name__ == "__main__":
     unittest.main()

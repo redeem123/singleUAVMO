@@ -37,7 +37,7 @@ def _mean_std(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def statistical_analysis(results_dir: Path, config: MetricConfig | None = None) -> dict[str, list[StatisticalRow]]:
     cfg = config or MetricConfig()
-    np.random.seed(cfg.seed)
+    rng = np.random.default_rng(cfg.seed)  # noqa: F841 — reserved for downstream sampling
     ref_points = _build_ref_points(results_dir)
     report: dict[str, list[StatisticalRow]] = {}
     for algorithm_dir in sorted(results_dir.iterdir()):

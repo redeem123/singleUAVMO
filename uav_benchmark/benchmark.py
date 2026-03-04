@@ -15,27 +15,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from uav_benchmark.algorithms import (
-    run_momfea,
-    run_momfea2,
-    run_mopso,
-    run_smpso,
-    run_nmopso,
-    run_nsga2,
-    run_nsga3,
-    run_moead,
-    run_spea2,
-    run_mfo_spea2,
-    run_gcnmoea,
-    run_cmosma,
-    run_fleet_moqgwo,
-    run_fleet_moqgwo_no_attention,
-    run_fleet_moqgwo_no_atlas,
-    run_fleet_moqgwo_standard_gwo,
-    run_fleet_moqgwo_gpu_strict,
-    run_fleet_apex_shade,
-    run_tskac_nsga2,
-)
+from uav_benchmark.algorithms import REGISTRY as _ALGORITHM_REGISTRY
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import load_mat, load_terrain_struct, save_mat
@@ -44,30 +24,7 @@ from uav_benchmark.problem_generation.generate import save_fleet_scenarios
 from uav_benchmark.utils.random import seed_everything
 
 AlgorithmRunner = Callable[[dict, BenchmarkParams], Any]
-
-# Lookup table so workers can resolve algorithm runners by name
-# (function objects are not always picklable across processes).
-_RUNNER_BY_NAME: dict[str, AlgorithmRunner] = {
-    "NMOPSO": run_nmopso,
-    "MOPSO": run_mopso,
-    "SMPSO": run_smpso,
-    "NSGA-II": run_nsga2,
-    "NSGA-III": run_nsga3,
-    "MOEAD": run_moead,
-    "SPEA2": run_spea2,
-    "MFO-SPEA2": run_mfo_spea2,
-    "GCNMOEA": run_gcnmoea,
-    "CMOSMA": run_cmosma,
-    "MO-MFEA": run_momfea,
-    "MO-MFEA-II": run_momfea2,
-    "MOQGWO": run_fleet_moqgwo,
-    "MOQGWO-NO-ATTENTION": run_fleet_moqgwo_no_attention,
-    "MOQGWO-NO-ATLAS": run_fleet_moqgwo_no_atlas,
-    "MOQGWO-STANDARD-GWO": run_fleet_moqgwo_standard_gwo,
-    "MOQGWO-GPU-STRICT": run_fleet_moqgwo_gpu_strict,
-    "APEX-SHADE": run_fleet_apex_shade,
-    "TSKAC-NSGA-II": run_tskac_nsga2,
-}
+_DEFAULT_MAX_WORKERS = 14
 
 _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "NMOPSO": 11,
@@ -82,11 +39,8 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "CMOSMA": 59,
     "MO-MFEA": 53,
     "MO-MFEA-II": 67,
-    "MOQGWO": 83,
-    "MOQGWO-NO-ATTENTION": 89,
-    "MOQGWO-NO-ATLAS": 101,
-    "MOQGWO-STANDARD-GWO": 103,
-    "MOQGWO-GPU-STRICT": 109,
+    "MOGWO": 83,
+    "MOGWO-NO-ATTENTION": 89,
     "APEX-SHADE": 97,
     "TSKAC-NSGA-II": 107,
 }
@@ -100,6 +54,9 @@ def _seed_for_run(base_seed: int, problem_index: int, algorithm_name: str, run_i
 
 
 def _can_parallelize_runs(algorithm_name: str, params: BenchmarkParams) -> bool:
+    # Per-run dispatch uses isolated worker processes (multiprocessing.Pool), so all
+    # algorithms are safe to parallelize at the run level. Stateful algorithms (e.g.,
+    # RL-NMOPSO) rebuild their controller fresh per worker process call. Always True.
     return True
 
 
@@ -203,7 +160,7 @@ def _build_benchmark_manifest(
     created_utc: str | None = None,
 ) -> dict[str, Any]:
     created = created_utc or datetime.now(timezone.utc).isoformat()
-    base_seed = int(params.seed) if params.seed is not None else 0
+    base_seed = int(params.seed) if params.seed is not None else 42
     problems = [_problem_name(path) for path in problem_files]
     task_plan: list[dict[str, Any]] = []
     for problem_index, problem in enumerate(problems, start=1):
@@ -294,43 +251,25 @@ def _normalize_algorithm_name(name: str) -> str:
         return "MO-MFEA"
     if key in {"mo-mfea-ii", "momfea2", "momfea-ii"}:
         return "MO-MFEA-II"
-    if key in {"moqgwo", "a2moqgwo", "a2-moqgwo"}:
-        return "MOQGWO"
+    if key in {"mogwo", "a2mogwo", "a2-mogwo"}:
+        return "MOGWO"
     if key in {
-        "moqgwo-no-attention",
-        "moqgwo_no_attention",
-        "a2moqgwo-no-attention",
-        "a2moqgwo_no_attention",
-        "a2-moqgwo-no-attention",
-        "a2moqgwo-noattention",
+        "mogwo-no-attention",
+        "mogwo_no_attention",
+        "a2mogwo-no-attention",
+        "a2mogwo_no_attention",
+        "a2-mogwo-no-attention",
+        "a2mogwo-noattention",
     }:
-        return "MOQGWO-NO-ATTENTION"
+        return "MOGWO-NO-ATTENTION"
     if key in {
-        "moqgwo-no-atlas",
-        "moqgwo_no_atlas",
-        "a2moqgwo-no-atlas",
-        "a2moqgwo_no_atlas",
-        "a2-moqgwo-no-atlas",
+        "mogwo-standard-gwo",
+        "mogwo_standard_gwo",
+        "a2mogwo-standard-gwo",
+        "a2mogwo_standard_gwo",
+        "a2-mogwo-standard-gwo",
     }:
-        return "MOQGWO-NO-ATLAS"
-    if key in {
-        "moqgwo-standard-gwo",
-        "moqgwo_standard_gwo",
-        "a2moqgwo-standard-gwo",
-        "a2moqgwo_standard_gwo",
-        "a2-moqgwo-standard-gwo",
-    }:
-        return "MOQGWO-STANDARD-GWO"
-    if key in {
-        "moqgwo-gpu-strict",
-        "moqgwo_gpu_strict",
-        "a2moqgwo-gpu-strict",
-        "a2moqgwo_gpu_strict",
-        "a2-moqgwo-gpu-strict",
-        "gpu-strict-moqgwo",
-        "gpu_strict_moqgwo",
-    }:
-        return "MOQGWO-GPU-STRICT"
+        return "MOGWO-NO-ATTENTION"
     if key in {"apex-shade", "apexshade", "apex_shade"}:
         return "APEX-SHADE"
     if key in {
@@ -398,16 +337,13 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
         "CMOSMA",
         "MO-MFEA",
         "MO-MFEA-II",
-        "MOQGWO",
-        "MOQGWO-NO-ATTENTION",
-        "MOQGWO-NO-ATLAS",
-        "MOQGWO-STANDARD-GWO",
-        "MOQGWO-GPU-STRICT",
+        "MOGWO",
+        "MOGWO-NO-ATTENTION",
         "APEX-SHADE",
         "TSKAC-NSGA-II",
     ]
-    mapping = [(name, _RUNNER_BY_NAME[name]) for name in _known_order if name in _RUNNER_BY_NAME]
-    extra = [(name, runner) for name, runner in _RUNNER_BY_NAME.items() if name not in _known_order]
+    mapping = [(name, _ALGORITHM_REGISTRY[name]) for name in _known_order if name in _ALGORITHM_REGISTRY]
+    extra = [(name, runner) for name, runner in _ALGORITHM_REGISTRY.items() if name not in _known_order]
     mapping.extend(sorted(extra, key=lambda item: item[0]))
     if not include_algorithms:
         return mapping
@@ -434,7 +370,7 @@ def _execute_task_run(
     run_index: int,
 ) -> None:
     """Worker function that executes exactly one run index."""
-    base_seed = int(params.seed) if params.seed is not None else 0
+    base_seed = int(params.seed) if params.seed is not None else 42
     seed_everything(_seed_for_run(base_seed, problem_index, algorithm_name, run_index))
 
     terrain = load_terrain_struct(problem_file)
@@ -454,7 +390,7 @@ def _execute_task_run(
         write_final_hv=False,
     )
 
-    runner = _RUNNER_BY_NAME[algorithm_name]
+    runner = _ALGORITHM_REGISTRY[algorithm_name]
     algo_params = replace(
         run_params,
         results_dir=params.results_dir / algorithm_name,
@@ -496,6 +432,17 @@ def _write_grouped_run_hv_summary(
 
 
 def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
+    # Resolve seed=None to a random seed so all workers share the same base.
+    if params.seed is None:
+        import secrets
+        import logging
+        resolved_seed = secrets.randbelow(2**31)
+        logging.getLogger(__name__).info(
+            "No --seed provided; using randomly generated seed=%d. "
+            "Pass --seed %d to reproduce this run.", resolved_seed, resolved_seed
+        )
+        params = replace(params, seed=resolved_seed)
+
     problems_dir = project_root / "problems"
     all_problem_files = sorted(problems_dir.glob("*.mat"))
     raw_fleet_sizes = params.fleet_sizes if params.fleet_sizes else (int(params.fleet_size),)
@@ -519,7 +466,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
             project_root=project_root,
             base_problem_names=base_names,
             fleet_sizes=tuple(int(size) for size in fleet_sizes),
-            seed=int(params.seed) if params.seed is not None else 0,
+            seed=int(params.seed) if params.seed is not None else 42,
             separation_min=float(params.separation_min),
             mission_prefix="paper_medium",
         )
@@ -579,7 +526,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         print("No benchmark tasks found for the selected mode/scenario settings.")
         return
 
-    worker_cap = int(params.extra.get("maxWorkers", 0)) if isinstance(params.extra, dict) else 0
+    worker_cap = int(params.extra.get("maxWorkers", _DEFAULT_MAX_WORKERS)) if isinstance(params.extra, dict) else _DEFAULT_MAX_WORKERS
     max_parallel_tasks = _max_parallel_worker_slots(tasks)
     if worker_cap > 0:
         n_workers = min(max_parallel_tasks, worker_cap, os.cpu_count() or 1)
