@@ -129,6 +129,131 @@ class MOGWOAttentionTest(unittest.TestCase):
         self.assertGreater(float(high_pressure_weights[0]), float(low_pressure_weights[0]) + 1e-6)
         self.assertLess(float(high_pressure_weights[2]), float(low_pressure_weights[2]) - 1e-6)
 
+    def test_low_diversity_biases_attention_towards_sparse_leaders(self) -> None:
+        engine = QGWO_Engine(
+            lower=np.zeros(3, dtype=float),
+            upper=np.ones(3, dtype=float),
+            pop_size=1,
+            use_attention=True,
+            use_diversity_feedback=True,
+        )
+        engine.leaders = np.asarray(
+            [
+                [0.2, 0.3, 0.4],
+                [0.2, 0.3, 0.4],
+                [0.2, 0.3, 0.4],
+            ],
+            dtype=float,
+        )
+        wolf_obj = np.asarray([[0.4, 0.4, 0.4, 0.4]], dtype=float)
+        leader_obj = np.asarray(
+            [
+                [0.4, 0.4, 0.4, 0.4],
+                [0.4, 0.4, 0.4, 0.4],
+                [0.4, 0.4, 0.4, 0.4],
+            ],
+            dtype=float,
+        )
+        occupancy = np.asarray([6.0, 1.0, 1.0], dtype=float)
+
+        engine.set_attention_context(
+            wolf_objectives=wolf_obj,
+            feasibility_pressure=0.0,
+            leader_objectives=leader_obj,
+            diversity_level=0.95,
+            leader_occupancy=occupancy,
+        )
+        high_div_weights = engine._attention_weights()[0]
+
+        engine.set_attention_context(
+            wolf_objectives=wolf_obj,
+            feasibility_pressure=0.0,
+            leader_objectives=leader_obj,
+            diversity_level=0.05,
+            leader_occupancy=occupancy,
+        )
+        low_div_weights = engine._attention_weights()[0]
+        sparse_weight_high_div = float(high_div_weights[1] + high_div_weights[2])
+        sparse_weight_low_div = float(low_div_weights[1] + low_div_weights[2])
+        self.assertGreater(sparse_weight_low_div, sparse_weight_high_div + 1e-6)
+
+    def test_step_limiter_reduces_update_when_feasibility_pressure_is_high(self) -> None:
+        leaders = np.asarray(
+            [
+                [0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+                [0.9, 0.9, 0.9, 0.9, 0.9, 0.9],
+                [0.3, 0.7, 0.3, 0.7, 0.3, 0.7],
+            ],
+            dtype=float,
+        )
+        positions = np.asarray(
+            [
+                [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+                [0.4, 0.6, 0.4, 0.6, 0.4, 0.6],
+            ],
+            dtype=float,
+        )
+        wolf_obj = np.asarray(
+            [
+                [0.8, 0.8, 0.8, 0.8],
+                [0.2, 0.2, 0.2, 0.2],
+            ],
+            dtype=float,
+        )
+        leader_obj = np.asarray(
+            [
+                [0.2, 0.2, 0.2, 0.2],
+                [0.5, 0.5, 0.5, 0.5],
+                [0.8, 0.8, 0.8, 0.8],
+            ],
+            dtype=float,
+        )
+
+        engine_low_p = QGWO_Engine(
+            lower=np.zeros(6, dtype=float),
+            upper=np.ones(6, dtype=float),
+            pop_size=2,
+            use_attention=True,
+            use_step_limiter=True,
+            use_attention_guard=False,
+        )
+        engine_low_p.positions = positions.copy()
+        engine_low_p.leaders = leaders.copy()
+        engine_low_p.set_attention_context(
+            wolf_objectives=wolf_obj,
+            feasibility_pressure=0.0,
+            leader_objectives=leader_obj,
+            diversity_level=0.8,
+            leader_occupancy=np.asarray([1.0, 2.0, 3.0], dtype=float),
+        )
+
+        engine_high_p = QGWO_Engine(
+            lower=np.zeros(6, dtype=float),
+            upper=np.ones(6, dtype=float),
+            pop_size=2,
+            use_attention=True,
+            use_step_limiter=True,
+            use_attention_guard=False,
+        )
+        engine_high_p.positions = positions.copy()
+        engine_high_p.leaders = leaders.copy()
+        engine_high_p.set_attention_context(
+            wolf_objectives=wolf_obj,
+            feasibility_pressure=1.0,
+            leader_objectives=leader_obj,
+            diversity_level=0.2,
+            leader_occupancy=np.asarray([1.0, 2.0, 3.0], dtype=float),
+        )
+
+        np.random.seed(19)
+        low_next = engine_low_p.step(1, 10)
+        np.random.seed(19)
+        high_next = engine_high_p.step(1, 10)
+
+        low_delta = float(np.mean(np.linalg.norm(low_next - positions, axis=1)))
+        high_delta = float(np.mean(np.linalg.norm(high_next - positions, axis=1)))
+        self.assertLess(high_delta, low_delta - 1e-6)
+
     def test_default_variant_calls_attention_context(self) -> None:
         terrain = _tiny_fleet_terrain()
         with tempfile.TemporaryDirectory() as tmpdir:

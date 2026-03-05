@@ -25,9 +25,22 @@ extra:
 # Planned ablation cases (component-wise):
 # - full (A2-MOGWO):
 #     extra: {}  # mogwoVariant defaults to "full"
+# - no_diversity_feedback:
+#     extra:
+#       mogwoUseDiversityFeedback: false
+# - no_step_limiter:
+#     extra:
+#       mogwoUseStepLimiter: false
+# - no_feasibility_recomb:
+#     extra:
+#       mogwoUseFeasibilityRecomb: false
+# - no_attention_guard:
+#     extra:
+#       mogwoUseAttentionGuard: false
 # - no_attention:
 #     extra:
 #       mogwoVariant: "no_attention"
+#       mogwoUseStepLimiterNoAttention: false
 # - standard_gwo:
 #     extra:
 #       mogwoVariant: "no_attention"  # NOTE: currently identical to no_attention

@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 
 @dataclass(slots=True)
 class RunDirectory:
@@ -19,6 +20,19 @@ def save_run_summary_json(
     metrics: dict[str, Any] | None = None,
 ) -> None:
     """Save a standardized JSON summary of a benchmark run."""
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {str(key): _json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_safe(item) for item in value]
+        return value
+
     summary = {
         "metadata": {
             "algorithm": getattr(params, "algorithm", "unknown"),
@@ -28,8 +42,8 @@ def save_run_summary_json(
             "population": getattr(params, "population", 0),
             "seed": getattr(params, "seed", None),
         },
-        "statistics": stats,
-        "metrics": metrics or {},
+        "statistics": _json_safe(stats),
+        "metrics": _json_safe(metrics or {}),
     }
     path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 

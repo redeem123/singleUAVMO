@@ -23,6 +23,7 @@ from uav_benchmark.analysis.metrics.report import (  # noqa: E402
 )
 from uav_benchmark.analysis.metrics.compute import _build_ref_points  # noqa: E402
 from uav_benchmark.core.metrics import cal_metric  # noqa: E402
+from uav_benchmark.io.matlab import load_mat  # noqa: E402
 
 try:
     from scipy.stats import friedmanchisquare, mannwhitneyu, wilcoxon  # type: ignore
@@ -38,6 +39,8 @@ class RunMetric:
     problem: str
     run_id: int
     hv: float
+    spread: float
+    convergence_rate: float
     igd_plus: float
     feasible_ratio: float
     runtime_sec: float
@@ -94,6 +97,31 @@ def _metric_value(record: RunMetric, metric_name: str) -> float:
     return float(getattr(record, metric_name))
 
 
+def _load_convergence_rate(run_dir: Path) -> float:
+    gen_hv_path = run_dir / "gen_hv.mat"
+    if not gen_hv_path.exists():
+        return float("nan")
+    try:
+        payload = load_mat(gen_hv_path)
+    except Exception:
+        return float("nan")
+    curve = np.asarray(payload.get("gen_hv", np.zeros((0, 2), dtype=float)), dtype=float)
+    if curve.ndim != 2 or curve.shape[0] == 0:
+        return float("nan")
+    hv_curve = np.asarray(curve[:, 0], dtype=float).reshape(-1)
+    hv_curve = hv_curve[np.isfinite(hv_curve)]
+    if hv_curve.size == 0:
+        return float("nan")
+    hv_curve = np.maximum.accumulate(hv_curve)
+    final_hv = float(np.max(hv_curve))
+    if final_hv <= 0.0:
+        return 0.0
+    threshold = 0.90 * final_hv
+    reached = np.where(hv_curve >= threshold)[0]
+    gen_90 = int(reached[0]) + 1 if reached.size > 0 else int(hv_curve.size)
+    return float(final_hv / float(max(1, gen_90)))
+
+
 def _collect_records(results_dir: Path, hv_samples: int, max_runs: int) -> list[RunMetric]:
     ref_points = _build_ref_points(results_dir)
     snapshots: list[tuple[str, str, int, Path, np.ndarray, np.ndarray]] = []
@@ -137,6 +165,8 @@ def _collect_records(results_dir: Path, hv_samples: int, max_runs: int) -> list[
             if feasible_obj.size
             else 0.0
         )
+        spread = cal_metric(2, feasible_obj, 0, objective_count) if feasible_obj.size else 0.0
+        convergence_rate = _load_convergence_rate(run_dir)
         igd_plus = _igd_plus(feasible_obj, reference_fronts.get(problem_name, np.zeros((0, 4), dtype=float)))
         runtime_sec = _load_runtime(run_dir)
         mission_conflict_rate = _load_mission_metric(run_dir, "conflictRate")
@@ -149,6 +179,8 @@ def _collect_records(results_dir: Path, hv_samples: int, max_runs: int) -> list[
                 problem=problem_name,
                 run_id=run_id,
                 hv=float(hv),
+                spread=float(spread),
+                convergence_rate=float(convergence_rate),
                 igd_plus=float(igd_plus),
                 feasible_ratio=float(feasible_ratio),
                 runtime_sec=float(runtime_sec),
@@ -394,6 +426,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def _parse_metric_list(raw: str) -> list[str]:
     default_metrics = [
         "hv",
+        "spread",
+        "convergence_rate",
         "igd_plus",
         "feasible_ratio",
         "runtime_sec",
