@@ -16,6 +16,8 @@ from uav_benchmark.config import BenchmarkParams
 _BENCHMARK_FLEET_SIZE_DEFAULT = 1
 _BENCHMARK_FLEET_SIZES_DEFAULT = "1,3"
 _BENCHMARK_DEFAULT_PROBLEM_NAMES = ("c_100", "m_100", "s_120")
+
+
 def _parse_fleet_sizes(raw: str) -> tuple[int, ...]:
     if not raw:
         return ()
@@ -33,6 +35,12 @@ def _load_protocol(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"Protocol file must contain a mapping: {path}")
     return payload
+
+
+def _arg_overrides_default(args: argparse.Namespace, name: str, default: object) -> bool:
+    if not hasattr(args, name):
+        return False
+    return getattr(args, name) != default
 
 
 def _build_params(args: argparse.Namespace) -> BenchmarkParams:
@@ -73,19 +81,17 @@ def _build_params(args: argparse.Namespace) -> BenchmarkParams:
         # Command-line mode override is intentional.
         protocol_params.mode = params.mode
         protocol_params.gpu_mode = params.gpu_mode
-        default_fleet_size = _BENCHMARK_FLEET_SIZE_DEFAULT
-        default_fleet_sizes_raw = _BENCHMARK_FLEET_SIZES_DEFAULT
-        if hasattr(args, "fleet_sizes") and params.fleet_sizes and str(getattr(args, "fleet_sizes", "")) != default_fleet_sizes_raw:
+        if _arg_overrides_default(args, "fleet_sizes", _BENCHMARK_FLEET_SIZES_DEFAULT) and params.fleet_sizes:
             protocol_params.fleet_sizes = params.fleet_sizes
-        if hasattr(args, "fleet_size") and int(getattr(args, "fleet_size", default_fleet_size)) != default_fleet_size:
+        if _arg_overrides_default(args, "fleet_size", _BENCHMARK_FLEET_SIZE_DEFAULT):
             protocol_params.fleet_size = params.fleet_size
-        if params.separation_min > 0:
+        if _arg_overrides_default(args, "separation_min", 10.0):
             protocol_params.separation_min = params.separation_min
-        if params.max_turn_deg > 0:
+        if _arg_overrides_default(args, "max_turn_deg", 75.0):
             protocol_params.max_turn_deg = params.max_turn_deg
-        if params.evaluation_budget >= 0:
+        if _arg_overrides_default(args, "evaluation_budget", 0):
             protocol_params.evaluation_budget = params.evaluation_budget
-        if params.scenario_set:
+        if _arg_overrides_default(args, "scenario_set", "paper_medium"):
             protocol_params.scenario_set = params.scenario_set
         return protocol_params
     return params

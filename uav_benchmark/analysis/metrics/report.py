@@ -259,8 +259,10 @@ def _load_mission_metric(run_dir: Path, key: str) -> float:
     values = values[np.isfinite(values)]
     if values.size == 0:
         return float("nan")
-    if key == "minSeparation":
+    if key in {"minSeparation", "minClearance"}:
         return float(np.min(values))
+    if key == "maxTurnDeg":
+        return float(np.max(values))
     return float(np.mean(values))
 
 
@@ -468,23 +470,28 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
         mission_min_separation = _load_mission_metric(run_dir, "minSeparation")
         mission_makespan = _load_mission_metric(run_dir, "makespan")
         mission_energy = _load_mission_metric(run_dir, "energy")
+        mission_min_clearance = _load_mission_metric(run_dir, "minClearance")
         mission_max_turn = _load_mission_metric(run_dir, "maxTurnDeg")
 
-        min_clearances: list[float] = []
-        max_turns: list[float] = []
-        for index, is_feasible in enumerate(feasible_mask, start=1):
-            if not bool(is_feasible):
-                continue
-            path_xyz = _load_path(run_dir, index)
-            if path_xyz is None:
-                continue
-            if model:
-                min_clearances.append(_path_min_clearance(path_xyz, model))
-            max_turns.append(_path_max_turn_deg(path_xyz))
-        min_clearance = float(np.min(min_clearances)) if min_clearances else float("nan")
-        max_turn_deg = float(np.max(max_turns)) if max_turns else float("nan")
-        if np.isfinite(mission_max_turn):
-            max_turn_deg = float(mission_max_turn)
+        min_clearance = float(mission_min_clearance)
+        max_turn_deg = float(mission_max_turn)
+        if not np.isfinite(min_clearance) or not np.isfinite(max_turn_deg):
+            min_clearances: list[float] = []
+            max_turns: list[float] = []
+            for index, is_feasible in enumerate(feasible_mask, start=1):
+                if not bool(is_feasible):
+                    continue
+                path_xyz = _load_path(run_dir, index)
+                if path_xyz is None:
+                    continue
+                if model and not np.isfinite(min_clearance):
+                    min_clearances.append(_path_min_clearance(path_xyz, model))
+                if not np.isfinite(max_turn_deg):
+                    max_turns.append(_path_max_turn_deg(path_xyz))
+            if not np.isfinite(min_clearance):
+                min_clearance = float(np.min(min_clearances)) if min_clearances else float("nan")
+            if not np.isfinite(max_turn_deg):
+                max_turn_deg = float(np.max(max_turns)) if max_turns else float("nan")
 
         records.append(
             RunRecord(
