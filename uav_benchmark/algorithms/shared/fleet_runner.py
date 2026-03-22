@@ -365,6 +365,8 @@ def _save_fleet_artifacts(
     run_metadata: dict[str, Any] | None = None,
 ) -> None:
     from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+    from uav_benchmark.io.results import save_run_summary_json
+
     ensure_dir(run_dir)
 
     # Final objective matrix
@@ -385,18 +387,12 @@ def _save_fleet_artifacts(
     if run_metadata:
         for key, value in run_metadata.items():
             run_stats[str(key)] = value
+    if run_dir.parent.name:
+        run_stats.setdefault("problemName", run_dir.parent.name)
+    algorithm_name = run_dir.parent.parent.name if run_dir.parent.parent != run_dir.parent else ""
+    if algorithm_name:
+        run_stats.setdefault("algorithm", str(run_stats.get("algorithmName", algorithm_name)))
     save_mat(run_dir / "run_stats.mat", run_stats)
-
-    from uav_benchmark.io.results import save_run_summary_json
-    # Pass a dummy params object with standard metadata structure if true params is unavailable
-    class _DummyParams:
-        algorithm = run_stats.get("algorithm", "fleet_run")
-        problem_name = run_stats.get("problemName", "unknown")
-        fleet_size = 0
-        generations = 0
-        population = len(final_candidates)
-        seed = 0
-    save_run_summary_json(run_dir / "run_summary.json", _DummyParams(), run_stats)
 
     # RL trace
     if rl_trace is not None:
@@ -487,7 +483,25 @@ def _save_fleet_artifacts(
     feasible_array = np.asarray(feasible_values, dtype=float)
     run_stats["solutionCount"] = int(final_matrix.shape[0]) if final_matrix.ndim == 2 else int(len(final_candidates))
     run_stats["feasibleCount"] = int(np.sum(feasible_array > 0.5)) if feasible_array.size > 0 else 0
+    inferred_fleet_size = 0
+    for paths in fleet_paths:
+        if paths:
+            inferred_fleet_size = len(paths)
+            break
+    if inferred_fleet_size > 0:
+        run_stats.setdefault("fleetSize", inferred_fleet_size)
     save_mat(run_dir / "run_stats.mat", run_stats)
+
+    # Save a normalized summary after the full run stats are available.
+    class _DummyParams:
+        algorithm = run_stats.get("algorithm", "fleet_run")
+        problem_name = run_stats.get("problemName", "unknown")
+        fleet_size = int(run_stats.get("fleetSize", 0))
+        generations = int(run_stats.get("generations", 0))
+        population = len(final_candidates)
+        seed = run_stats.get("seed", 0)
+
+    save_run_summary_json(run_dir / "run_summary.json", _DummyParams(), run_stats)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _test_support import install_numba_stub
+
+install_numba_stub()
 
 from uav_benchmark.cli import _build_params
 
@@ -58,6 +64,50 @@ class ProtocolFleetOverrideTest(unittest.TestCase):
             params = _build_params(args)
             self.assertEqual(params.fleet_size, 4)
             self.assertEqual(params.fleet_sizes, (4, 6))
+
+    def test_protocol_non_fleet_defaults_are_preserved_when_cli_uses_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(
+                (
+                    "mode: multi\n"
+                    "separationMin: 22.5\n"
+                    "maxTurnDeg: 55.0\n"
+                    "evaluationBudget: 99\n"
+                    "scenarioSet: custom_suite\n"
+                ),
+                encoding="utf-8",
+            )
+            args = _build_fleet_args(protocol_path=protocol_path, fleet_size=1, fleet_sizes="1,3")
+            params = _build_params(args)
+            self.assertEqual(params.separation_min, 22.5)
+            self.assertEqual(params.max_turn_deg, 55.0)
+            self.assertEqual(params.evaluation_budget, 99)
+            self.assertEqual(params.scenario_set, "custom_suite")
+
+    def test_protocol_non_fleet_defaults_can_be_overridden_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_path = Path(tmpdir) / "protocol.yaml"
+            protocol_path.write_text(
+                (
+                    "mode: multi\n"
+                    "separationMin: 22.5\n"
+                    "maxTurnDeg: 55.0\n"
+                    "evaluationBudget: 99\n"
+                    "scenarioSet: custom_suite\n"
+                ),
+                encoding="utf-8",
+            )
+            args = _build_fleet_args(protocol_path=protocol_path, fleet_size=1, fleet_sizes="1,3")
+            args.separation_min = 14.0
+            args.max_turn_deg = 80.0
+            args.evaluation_budget = 123
+            args.scenario_set = "paper_medium_alt"
+            params = _build_params(args)
+            self.assertEqual(params.separation_min, 14.0)
+            self.assertEqual(params.max_turn_deg, 80.0)
+            self.assertEqual(params.evaluation_budget, 123)
+            self.assertEqual(params.scenario_set, "paper_medium_alt")
 
 
 if __name__ == "__main__":
