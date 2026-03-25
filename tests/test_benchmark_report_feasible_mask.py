@@ -80,7 +80,7 @@ class BenchmarkReportFeasibleMaskTest(unittest.TestCase):
                 {
                     # Legacy/stale scalar should be ignored when length != PopObj rows.
                     "feasible": np.array([0.0], dtype=float),
-                    "turnViolation": np.array([0.0, 1.0, 0.0], dtype=float),  # ignored for feasibility
+                    "turnViolation": np.array([0.0, 1.0, 0.0], dtype=float),
                     "separationViolation": np.array([0.0, 0.0, 0.0], dtype=float),
                     "collisionViolation": np.array([0.0, 1.0, 0.0], dtype=float),
                 },
@@ -117,6 +117,7 @@ class BenchmarkReportFeasibleMaskTest(unittest.TestCase):
                 run_dir / "mission_stats.mat",
                 {
                     "feasible": np.array([1.0], dtype=float),
+                    "turnViolation": np.array([0.0], dtype=float),
                     "separationViolation": np.array([0.0], dtype=float),
                     "collisionViolation": np.array([0.0], dtype=float),
                     "minClearance": np.array([0.25], dtype=float),

@@ -37,10 +37,13 @@ _ALGORITHM_SEED_OFFSET: dict[str, int] = {
     "MFO-SPEA2": 61,
     "GCNMOEA": 71,
     "CMOSMA": 59,
+    "FASTR-MOEA": 73,
+    "TACTIC-MOEA": 79,
     "MO-MFEA": 53,
     "MO-MFEA-II": 67,
     "MOGWO": 83,
     "MOGWO-NO-ATTENTION": 89,
+    "MOGWO-STANDARD-GWO": 101,
     "APEX-SHADE": 97,
     "TSKAC-NSGA-II": 107,
 }
@@ -140,6 +143,8 @@ def _params_manifest(params: BenchmarkParams) -> dict[str, Any]:
         "evaluationBudget": int(params.evaluation_budget),
         "scenarioSet": str(params.scenario_set),
         "gpuMode": str(params.gpu_mode),
+        "runIndices": [int(item) for item in params.run_indices] if params.run_indices else [],
+        "writeFinalHv": bool(params.write_final_hv),
         "resultsDir": str(params.results_dir.resolve()),
         "extra": dict(params.extra) if isinstance(params.extra, dict) else {},
     }
@@ -247,6 +252,10 @@ def _normalize_algorithm_name(name: str) -> str:
         return "GCNMOEA"
     if key in {"cmosma", "cmo-sma", "cmo_sma"}:
         return "CMOSMA"
+    if key in {"fastr-moea", "fastr_moea", "fastrmoea"}:
+        return "FASTR-MOEA"
+    if key in {"tactic-moea", "tactic_moea", "tacticmoea"}:
+        return "TACTIC-MOEA"
     if key in {"mo-mfea", "momfea"}:
         return "MO-MFEA"
     if key in {"mo-mfea-ii", "momfea2", "momfea-ii"}:
@@ -269,7 +278,7 @@ def _normalize_algorithm_name(name: str) -> str:
         "a2mogwo_standard_gwo",
         "a2-mogwo-standard-gwo",
     }:
-        return "MOGWO-NO-ATTENTION"
+        return "MOGWO-STANDARD-GWO"
     if key in {"apex-shade", "apexshade", "apex_shade"}:
         return "APEX-SHADE"
     if key in {
@@ -316,6 +325,19 @@ def _requested_problem_names(extra: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(tokens))
 
 
+def _resolved_run_indices(params: BenchmarkParams) -> tuple[int, ...]:
+    raw = params.run_indices
+    if raw is None:
+        return tuple(range(1, int(params.runs) + 1))
+    if isinstance(raw, (list, tuple)):
+        indices = [int(item) for item in raw if int(item) >= 1]
+    else:
+        indices = [int(raw)] if int(raw) >= 1 else []
+    if not indices:
+        return tuple(range(1, int(params.runs) + 1))
+    return tuple(dict.fromkeys(indices))
+
+
 def _problem_name(problem_file: Path) -> str:
     name = problem_file.stem
     if name.startswith("terrainStruct_"):
@@ -335,10 +357,13 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
         "MFO-SPEA2",
         "GCNMOEA",
         "CMOSMA",
+        "FASTR-MOEA",
+        "TACTIC-MOEA",
         "MO-MFEA",
         "MO-MFEA-II",
         "MOGWO",
         "MOGWO-NO-ATTENTION",
+        "MOGWO-STANDARD-GWO",
         "APEX-SHADE",
         "TSKAC-NSGA-II",
     ]
@@ -543,7 +568,8 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
     print(f"benchmark_manifest={manifest_path}")
     print(f"Running {len(tasks)} tasks in grouped_runs mode (max workers={n_workers})")
 
-    task_pending_runs: list[list[int]] = [list(range(1, int(params.runs) + 1)) for _ in tasks]
+    run_indices = _resolved_run_indices(params)
+    task_pending_runs: list[list[int]] = [list(run_indices) for _ in tasks]
     task_active_runs = [0 for _ in tasks]
     task_finalized = [False for _ in tasks]
     task_run_limit: list[int] = []
@@ -558,7 +584,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
         task_run_limit.append(run_workers)
         print(
             f"Task {task_index}/{len(tasks)}: {algorithm_name} / {problem_name} "
-            f"using up to {run_workers} worker(s) across {params.runs} run(s)"
+            f"using up to {run_workers} worker(s) across {len(run_indices)} run(s)"
         )
 
     in_flight: list[tuple[multiprocessing.pool.AsyncResult, int, int]] = []
@@ -628,14 +654,25 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
 
 
 def run_nmopso_ablation(project_root: Path, params: BenchmarkParams) -> None:
+    extra = dict(params.extra) if isinstance(params.extra, dict) else {}
+    extra["ablationStudy"] = True
+    extra["legacyPathRunner"] = True
+    params = replace(params, extra=extra)
     seed_everything(params.seed)
     problems_dir = project_root / "problems"
-    problem_files = sorted(problems_dir.glob("*.mat"))
+    problem_files = [
+        path
+        for path in sorted(problems_dir.glob("*.mat"))
+        if _fleet_from_problem_name(_problem_name(path)) is None
+    ]
     ensure_dir(params.results_dir)
+    runner = _ALGORITHM_REGISTRY.get("NMOPSO")
+    if runner is None:
+        raise RuntimeError("NMOPSO is not registered in the algorithm registry.")
     for problem_index, problem_file in enumerate(problem_files, start=1):
         terrain = load_terrain_struct(problem_file)
         terrain["safeDist"] = params.safe_dist
         terrain["droneSize"] = params.drone_size
         name = _problem_name(problem_file)
         run_params = replace(params, problem_name=name, problem_index=problem_index)
-        run_nmopso(terrain, run_params)
+        runner(terrain, run_params)

@@ -185,12 +185,12 @@ class Chromosome:
         except (ValueError, IndexError, FloatingPointError):
             objectives = np.full(4, np.inf, dtype=float)
         self.objs = objectives
-        self.compute_constraint_violation()
+        self.compute_constraint_violation(model)
         return self
 
-    def compute_constraint_violation(self) -> None:
+    def compute_constraint_violation(self, model: dict[str, Any] | None = None) -> None:
         violation = 0.0
-        max_turn_deg = 75.0
+        max_turn_deg = 75.0 if model is None else float(model.get("maxTurnDeg", model.get("maxTurnAngleDeg", 75.0)))
         for index in range(1, self.path.shape[0] - 1):
             horizontal_length = float(np.linalg.norm(self.path[index, :2] - self.path[index - 1, :2]))
             if horizontal_length > 0:

@@ -47,7 +47,8 @@ class EvaluateMissionConstraintsTest(unittest.TestCase):
         # 90-degree bend exceeds maxTurnDeg and should be reflected in diagnostics.
         path = np.array([[10.0, 10.0, 10.0], [30.0, 10.0, 10.0], [30.0, 30.0, 10.0]], dtype=float)
         obj, details = evaluate_mission_details([path], model)
-        self.assertTrue(np.all(np.isfinite(obj)))
+        self.assertTrue(np.isinf(obj).all())
+        self.assertEqual(details["feasible"], 0.0)
         self.assertEqual(details["turnViolation"], 1.0)
         self.assertGreater(details["maxTurnDeg"], model["maxTurnDeg"])
 

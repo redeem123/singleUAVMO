@@ -12,7 +12,7 @@
 - `core/evaluate_path.m` -> `uav_benchmark/core/evaluate_path.py`
 - `core/metrics/*.m` -> `uav_benchmark/core/metrics.py`
 - `algorithms/*/run_*.m` -> `uav_benchmark/algorithms/*.py`
-- `Problem Generation/*.m` -> `Problem Generation/*.py` and `uav_benchmark/problem_generation/generate.py`
+- `Problem Generation/*.m` -> `scripts/legacy/problem_generation/*.py` and `uav_benchmark/problem_generation/generate.py`
 
 ## Baseline Artifacts
 - Script: `scripts/capture_baseline.py`

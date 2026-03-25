@@ -410,10 +410,13 @@ def _save_fleet_artifacts(
     energy_values: list[float] = []
     risk_values: list[float] = []
     max_turn_values: list[float] = []
+    turn_violation_values: list[float] = []
     separation_violation_values: list[float] = []
     collision_violation_values: list[float] = []
     min_clearance_values: list[float] = []
-    for c in final_candidates:
+    conflict_log_rows: list[np.ndarray] = []
+    conflict_log_candidate_index: list[np.ndarray] = []
+    for candidate_index, c in enumerate(final_candidates, start=1):
         paths = c.details.get("paths", [])
         fleet_paths.append(paths)
         details = c.details if isinstance(c.details, dict) else {}
@@ -424,9 +427,19 @@ def _save_fleet_artifacts(
         energy_values.append(float(details.get("energy", np.nan)))
         risk_values.append(float(details.get("risk", np.nan)))
         max_turn_values.append(float(details.get("maxTurnDeg", np.nan)))
+        turn_violation_values.append(float(details.get("turnViolation", np.nan)))
         separation_violation_values.append(float(details.get("separationViolation", np.nan)))
         collision_violation_values.append(float(details.get("collisionViolation", np.nan)))
         min_clearance_values.append(float(details.get("minClearance", np.nan)))
+        conflict_log = np.asarray(details.get("conflictLog", np.zeros((0, 5), dtype=float)), dtype=float)
+        if conflict_log.ndim == 1 and conflict_log.size == 5:
+            conflict_log = conflict_log.reshape(1, 5)
+        if conflict_log.ndim == 2 and conflict_log.shape[1] >= 5 and conflict_log.shape[0] > 0:
+            trimmed = np.asarray(conflict_log[:, :5], dtype=float)
+            conflict_log_rows.append(trimmed)
+            conflict_log_candidate_index.append(
+                np.full(trimmed.shape[0], float(candidate_index), dtype=float)
+            )
 
     # Base-fleet-compatible path artifacts: persist primary UAV path as bp_*.mat.
     for idx, paths in enumerate(fleet_paths, start=1):
@@ -457,6 +470,7 @@ def _save_fleet_artifacts(
             "energy": np.asarray(energy_values, dtype=float),
             "risk": np.asarray(risk_values, dtype=float),
             "maxTurnDeg": np.asarray(max_turn_values, dtype=float),
+            "turnViolation": np.asarray(turn_violation_values, dtype=float),
             "separationViolation": np.asarray(separation_violation_values, dtype=float),
             "collisionViolation": np.asarray(collision_violation_values, dtype=float),
             "minClearance": np.asarray(min_clearance_values, dtype=float),
@@ -477,8 +491,23 @@ def _save_fleet_artifacts(
             pass
 
     # Conflict log
-    if conflict_values:
-        save_mat(run_dir / "conflict_log.mat", {"conflicts": np.array(conflict_values, dtype=float)})
+    detailed_conflicts = (
+        np.vstack(conflict_log_rows) if conflict_log_rows else np.zeros((0, 5), dtype=float)
+    )
+    conflict_candidate_index = (
+        np.concatenate(conflict_log_candidate_index)
+        if conflict_log_candidate_index
+        else np.zeros(0, dtype=float)
+    )
+    save_mat(
+        run_dir / "conflict_log.mat",
+        {
+            "conflicts": detailed_conflicts,
+            "conflictLog": detailed_conflicts,
+            "candidateIndex": conflict_candidate_index,
+            "conflictRates": np.asarray(conflict_values, dtype=float),
+        },
+    )
 
     feasible_array = np.asarray(feasible_values, dtype=float)
     run_stats["solutionCount"] = int(final_matrix.shape[0]) if final_matrix.ndim == 2 else int(len(final_candidates))

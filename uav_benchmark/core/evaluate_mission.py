@@ -130,17 +130,18 @@ def evaluate_mission_details(
     risk = float(obj[2])
     turn_penalty = float(obj[3])
     separation_violation = bool(np.isfinite(min_sep) and min_sep < separation_min)
-    if infeasible or separation_violation or (hard_collision and collision_violation):
+    turn_violation = bool(max_turn_observed > max_turn_deg_limit + 1e-9)
+    if infeasible or separation_violation or turn_violation or (hard_collision and collision_violation):
         obj[:] = np.inf
     details = {
         "feasible": float(np.all(np.isfinite(obj))),
         "conflictRate": conflict_rate,
-        "minSeparation": float(min_sep if np.isfinite(min_sep) else 0.0),
+        "minSeparation": float(min_sep) if np.isfinite(min_sep) else float("nan"),
         "makespan": makespan,
         "energy": energy,
         "risk": risk,
         "maxTurnDeg": float(max_turn_observed),
-        "turnViolation": float(max_turn_observed > max_turn_deg_limit + 1e-9),
+        "turnViolation": float(turn_violation),
         "turnPenalty": turn_penalty,
         "separationViolation": float(separation_violation),
         "collisionViolation": float(collision_violation),

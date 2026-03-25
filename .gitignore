@@ -23,11 +23,38 @@ env/
 .DS_Store
 Thumbs.db
 
-# Results (large generated files)
-results/
-
 # Jupyter
 .ipynb_checkpoints/
 
 # Testing
 .hypothesis/
+.pytest_cache/
+
+# Generated workspace
+results/*
+!results/README.md
+logs/*
+!logs/README.md
+*.pid
+
+# Research workspace
+research/working/
+research/papers/
+research/writing/
+
+# Documentation / LaTeX build outputs
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+
+# Root scratch exports
+/*.html
+/*.pdf
+/auto_research_prompt.md
+/prompt.md
+/research_log.md

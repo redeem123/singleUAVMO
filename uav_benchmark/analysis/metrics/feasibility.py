@@ -40,7 +40,7 @@ def load_mission_feasible_mask(
     run_dir: Path,
     count: int,
     base_mask: np.ndarray | None = None,
-    violation_keys: tuple[str, ...] = ("separationViolation", "collisionViolation"),
+    violation_keys: tuple[str, ...] = ("turnViolation", "separationViolation", "collisionViolation"),
 ) -> np.ndarray:
     if count <= 0:
         return np.zeros(0, dtype=bool)

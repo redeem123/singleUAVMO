@@ -25,13 +25,13 @@ class ComputeMetricsFeasibleMaskTest(unittest.TestCase):
                 run_dir / "mission_stats.mat",
                 {
                     "feasible": np.array([0.0], dtype=float),
-                    "turnViolation": np.array([0.0, 1.0, 0.0], dtype=float),  # ignored for feasibility
+                    "turnViolation": np.array([0.0, 1.0, 0.0], dtype=float),
                     "separationViolation": np.array([0.0, 0.0, 0.0], dtype=float),
                     "collisionViolation": np.array([0.0, 0.0, 1.0], dtype=float),
                 },
             )
             mask = _load_feasible_mask(run_dir, 3)
-        self.assertEqual(mask.tolist(), [True, True, False])
+        self.assertEqual(mask.tolist(), [True, False, False])
 
 
 if __name__ == "__main__":
