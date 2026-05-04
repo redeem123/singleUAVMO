@@ -1,0 +1,21 @@
+Generations: 300
+population: 80
+Runs: 10
+mode: fleet
+fleetSizes: [3, 5, 8]
+separationMin: 10.0
+maxTurnDeg: 75.0
+scenarioSet: paper_medium
+seed: 11
+gpuMode: auto
+problemNames:
+  - c_100
+  - m_100
+  - s_120
+seeds: [11, 13, 17, 19, 23, 29, 31, 37, 41, 43]
+algorithms:
+  - NSGA-II
+  - MOEAD
+  - MOPSO
+  - SMPSO
+maxWorkers: 4

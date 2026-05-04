@@ -25,7 +25,7 @@ def resolve_gpu(mode: str) -> GPUInfo:
         device_count = int(cupy.cuda.runtime.getDeviceCount())
         if device_count > 0:
             return GPUInfo(enabled=True, backend="cupy", device="cuda:0", reason="cupy detected")
-    except Exception:
+    except (ImportError, OSError, RuntimeError, ValueError):
         pass
 
     try:
@@ -35,10 +35,9 @@ def resolve_gpu(mode: str) -> GPUInfo:
             return GPUInfo(enabled=True, backend="torch", device="cuda:0", reason="torch cuda available")
         if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
             return GPUInfo(enabled=True, backend="torch", device="mps", reason="torch mps available")
-    except Exception:
+    except (ImportError, OSError, RuntimeError):
         pass
 
     if normalized == "force":
         return GPUInfo(enabled=False, backend="numpy", device="cpu", reason="force requested but no GPU backend found")
     return GPUInfo(enabled=False, backend="numpy", device="cpu", reason="auto fallback to CPU")
-

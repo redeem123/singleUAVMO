@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """MOEA/D runner adapted for this benchmark.
 
 Core decomposition flow is inherited from the PlatEMO MOEAD implementation
 (Q. Zhang and H. Li, 2007; PlatEMO educational codebase), then adapted to
 this repository's fleet constrained evaluation and artifact pipeline.
 """
+
+from __future__ import annotations
 
 import time
 from typing import Any
@@ -25,15 +25,13 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga3_ops import uniform_point
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
-
-from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate
 
 
 def _update_ideal_point(ideal: np.ndarray, objective: np.ndarray) -> np.ndarray:
@@ -151,11 +149,13 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     pop_size = int(adjusted_population)
     if pop_size != int(params.population):
         import logging
+
         logging.getLogger(__name__).warning(
             "MOEAD: NBI weight generation adjusted population size %d → %d "
             "(4-objective NBI simplex constraint). Pass moeadWeightMethod='LATIN' "
             "in extra for exact population control.",
-            int(params.population), pop_size,
+            int(params.population),
+            pop_size,
         )
     weights = np.maximum(np.asarray(weights, dtype=float), 1e-6)
     if weights.shape[0] != pop_size:
@@ -167,7 +167,6 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
     approach_type = int(params.extra.get("moeadType", 1))
     approach_type = 1 if approach_type < 1 or approach_type > 4 else approach_type
     theta = float(params.extra.get("moeadTheta", 5.0))
-
     dist = np.linalg.norm(weights[:, np.newaxis, :] - weights[np.newaxis, :, :], axis=2)
     neighbors = np.argsort(dist, axis=1)[:, :neighbor_size]
 
@@ -196,7 +195,9 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         candidates = _evaluate_population(population, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
         ideal = _finite_ideal(candidates, objective_count)
         constraint_vector = _constraint_violation_vector(candidates, model)
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             zmax = _finite_max(candidates, objective_count, fallback=ideal + 1.0)
@@ -214,7 +215,9 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
                 old_obj = np.asarray([candidates[int(j)].objective for j in subset], dtype=float)
                 old_con = constraint_vector[subset]
-                new_obj = np.repeat(np.asarray(child_candidate.objective, dtype=float).reshape(1, -1), subset.shape[0], axis=0)
+                new_obj = np.repeat(
+                    np.asarray(child_candidate.objective, dtype=float).reshape(1, -1), subset.shape[0], axis=0
+                )
                 old_g = _decomposition_values(old_obj, weights[subset], ideal, approach_type, theta, zmax)
                 new_g = _decomposition_values(new_obj, weights[subset], ideal, approach_type, theta, zmax)
 
@@ -227,7 +230,6 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                         population[gi] = child_vec
                         candidates[gi] = _clone_candidate(child_candidate, vector=child_vec)
                         constraint_vector[gi] = child_con
-
             if params.compute_metrics:
                 final_obj = _candidate_matrix(candidates)
                 if generation == 1 or generation == params.generations or generation % metric_interval == 0:
@@ -239,18 +241,28 @@ def _run_fleet_moead(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         ensure_dir(run_dir)
         if params.compute_metrics:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_history})
+        final_candidates = candidates
         _save_fleet_artifacts(
             run_dir=run_dir,
-            final_candidates=candidates,
+            final_candidates=final_candidates,
             problem_index=params.problem_index,
             objective_count=objective_count,
             runtime_sec=float(time.perf_counter() - run_start),
             gpu_backend="numpy:cpu",
             gpu_peak_bytes=0.0,
+            run_metadata={
+                "algorithmName": str(params.algorithm or "MOEAD"),
+                "optimizerBackend": "MOEA/D native Python fleet optimizer",
+                "pythonProblemEvaluation": True,
+                "benchmarkObjectiveDuringSearch": True,
+                "nativePopulationLoop": True,
+                "nativeGenerationLoop": True,
+                "decomposition": "weight-vector Tchebycheff neighborhood update",
+            },
         )
 
         if params.compute_metrics:
-            final_obj = _candidate_matrix(candidates)
+            final_obj = _candidate_matrix(final_candidates)
             run_scores[run_idx - 1] = np.array(
                 [
                     cal_metric(1, final_obj, params.problem_index, objective_count),

@@ -7,7 +7,7 @@ from pathlib import Path
 def _numpy_is_broken() -> bool:
     try:
         import numpy as np  # type: ignore
-    except Exception:
+    except (ImportError, OSError, RuntimeError):
         return True
     if hasattr(np, "__version__"):
         return False
@@ -45,4 +45,3 @@ def bootstrap_homebrew_science_stack() -> None:
         del sys.modules["numpy"]
     if "scipy" in sys.modules:
         del sys.modules["scipy"]
-

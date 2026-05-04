@@ -6,9 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.config import BenchmarkParams
-from uav_benchmark.algorithms.shared.fleet_runner import run_fleet_nsga2, _resolve_run_indices
+from uav_benchmark.algorithms.shared.fleet_runner import _resolve_run_indices, run_fleet_nsga2
 from uav_benchmark.algorithms.shared.mission_stats import build_mission_stats
+from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.chromosome import Chromosome
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import environmental_selection, f_operator, tournament_selection
@@ -76,7 +76,9 @@ def _nsga2_legacy_run(
         use_constraints=use_constraints,
     )
 
-    hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+    hv_history = (
+        np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+    )
     for generation in range(1, params.generations + 1):
         mating_pool = tournament_selection(2, params.population, front_no, -crowding)
         offspring = f_operator(population, mating_pool, boundary, model)
@@ -123,6 +125,7 @@ def _nsga2_legacy_run(
     save_mat(run_dir / "run_stats.mat", run_stats)
 
     from uav_benchmark.io.results import save_run_summary_json
+
     save_run_summary_json(run_dir / "run_summary.json", params, run_stats)
 
     if not params.compute_metrics:

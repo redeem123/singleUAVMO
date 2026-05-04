@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
 
 @dataclass(slots=True)
 class RunDirectory:
@@ -20,6 +21,7 @@ def save_run_summary_json(
     metrics: dict[str, Any] | None = None,
 ) -> None:
     """Save a standardized JSON summary of a benchmark run."""
+
     def _json_safe(value: Any) -> Any:
         if isinstance(value, Path):
             return str(value)

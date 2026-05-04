@@ -1,0 +1,23 @@
+# High-fidelity ablation re-benchmark
+allowExperimentalAlgorithms: true
+mode: multi
+scenarioSet: paper_medium
+generations: 500
+population: 100
+runs: 30
+computeMetrics: true
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [1, 2, 3]
+seed: 11
+gpuMode: off
+
+extra:
+  algorithms: ["MOGWO"]
+  problemNames: ["c_100", "m_100", "s_120"]
+  hardCollisionConstraint: true
+  maxWorkers: 14
+  nRep: 100
+  resumeExistingRuns: false

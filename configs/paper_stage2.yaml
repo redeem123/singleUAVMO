@@ -1,0 +1,11 @@
+Generations: 16
+population: 12
+Runs: 1
+mode: fleet
+fleetSizes: [3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+scenarioSet: paper_medium
+gpuMode: off
+sacPolicyMode: finetune
+stateRepresentation: TRFTS

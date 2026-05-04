@@ -5,18 +5,19 @@ from typing import Any
 
 import numpy as np
 
+from uav_benchmark.exceptions import OptionalDependencyUnavailable
+from uav_benchmark.model_contracts import validate_terrain_model
 
-class MatlabDependencyError(RuntimeError):
+
+class MatlabDependencyError(OptionalDependencyUnavailable):
     """Raised when MATLAB IO dependency is not available."""
 
 
 def _require_scipy():
     try:
         from scipy.io import loadmat, savemat  # type: ignore
-    except Exception as exc:  # pragma: no cover - dependency gate
-        raise MatlabDependencyError(
-            "scipy is required for .mat I/O. Install requirements-python.txt first."
-        ) from exc
+    except ImportError as exc:  # pragma: no cover - dependency gate
+        raise MatlabDependencyError("scipy is required for .mat I/O. Install requirements-python.txt first.") from exc
     return loadmat, savemat
 
 
@@ -130,12 +131,10 @@ def load_terrain_struct(path: str | Path) -> dict[str, Any]:
     if "fleetSize" not in normalized and "starts" in normalized:
         normalized["fleetSize"] = float(np.asarray(normalized["starts"], dtype=float).shape[0])
     if "separationMin" not in normalized:
-        normalized["separationMin"] = float(
-            normalized.get("safeDist", normalized.get("safe_dist", 10.0))
-        )
+        normalized["separationMin"] = float(normalized.get("safeDist", normalized.get("safe_dist", 10.0)))
     if "missionId" in normalized and not isinstance(normalized["missionId"], str):
         normalized["missionId"] = str(_to_scalar(normalized["missionId"]))
-    return normalized
+    return validate_terrain_model(normalized, context=str(path))
 
 
 def save_run_popobj(path: str | Path, pop_obj: np.ndarray, problem_index: int, objective_count: int) -> None:

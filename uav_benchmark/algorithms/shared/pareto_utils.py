@@ -4,6 +4,7 @@ These functions were duplicated across cmosma, mfo_spea2, spea2, gcnmoea and
 moead.  Consolidating them here removes ~80 lines of dead duplication and
 ensures a single, auditable implementation.
 """
+
 from __future__ import annotations
 
 import copy

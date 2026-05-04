@@ -20,7 +20,8 @@ def _rng(seed: int | None) -> np.random.Generator:
 
 
 def _mesh(terrain_size: int) -> tuple[np.ndarray, np.ndarray]:
-    return np.meshgrid(np.arange(1, terrain_size + 1), np.arange(1, terrain_size + 1))
+    x_grid, y_grid = np.meshgrid(np.arange(1, terrain_size + 1), np.arange(1, terrain_size + 1))
+    return x_grid, y_grid
 
 
 def _save(path: Path, terrain_struct: dict) -> None:
@@ -94,7 +95,9 @@ def generate_suburban(spec: TerrainSpec, with_nofly: bool = False) -> dict:
     num_buildings = 110 if with_nofly else 120
     max_height = 20.0
     x_grid, y_grid = _mesh(terrain_size)
-    base = 10.0 * (np.sin(0.005 * x_grid) + np.sin(0.005 * y_grid) + 0.5 * np.sin(0.03 * x_grid) * np.sin(0.03 * y_grid))
+    base = 10.0 * (
+        np.sin(0.005 * x_grid) + np.sin(0.005 * y_grid) + 0.5 * np.sin(0.03 * x_grid) * np.sin(0.03 * y_grid)
+    )
     base = base - np.min(base)
     base = base / np.max(base)
     base = base * max_height * 2
@@ -243,10 +246,13 @@ def save_fleet_scenarios(
     seed: int,
     separation_min: float,
     mission_prefix: str = "paper_medium",
+    output_dir: Path | None = None,
 ) -> list[Path]:
     project_root = project_root.resolve()
     output_paths: list[Path] = []
     problems_dir = project_root / "problems"
+    scenario_dir = output_dir.resolve() if output_dir is not None else problems_dir
+    scenario_dir.mkdir(parents=True, exist_ok=True)
     for base_name in base_problem_names:
         terrain_file = problems_dir / f"terrainStruct_{base_name}.mat"
         if not terrain_file.exists():
@@ -262,7 +268,7 @@ def save_fleet_scenarios(
                 separation_min=separation_min,
                 mission_prefix=mission_prefix,
             )
-            out_file = problems_dir / f"terrainStruct_{base_name}_uav{fleet_size}.mat"
+            out_file = scenario_dir / f"terrainStruct_{base_name}_uav{fleet_size}.mat"
             save_mat(out_file, {"terrainStruct": mission})
             output_paths.append(out_file)
     return output_paths

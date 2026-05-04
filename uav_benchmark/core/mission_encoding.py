@@ -21,24 +21,47 @@ def decode_decision(
     return vector.reshape(fleet_size, n_waypoints, 3)
 
 
+def _model_bounds(model: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+    return (
+        float(model["xmin"]),
+        float(model["xmax"]),
+        float(model["ymin"]),
+        float(model["ymax"]),
+        float(model["zmin"]),
+        float(model["zmax"]),
+    )
+
+
+def _safe_height(model: dict[str, Any]) -> float | None:
+    safe_h = model.get("safeH")
+    return None if safe_h is None else float(safe_h)
+
+
 def _ground_height(height_map: np.ndarray, x: float, y: float, xmax: int, ymax: int) -> float:
     if not np.isfinite(x):
         x = 0.5 * (1.0 + float(xmax))
     if not np.isfinite(y):
         y = 0.5 * (1.0 + float(ymax))
-    xi = int(np.clip(round(x), 1, xmax)) - 1
-    yi = int(np.clip(round(y), 1, ymax)) - 1
-    return float(height_map[yi, xi])
+    px = float(np.clip(x, 1.0, float(xmax))) - 1.0
+    py = float(np.clip(y, 1.0, float(ymax))) - 1.0
+    x0 = int(np.floor(px))
+    x1 = min(x0 + 1, xmax - 1)
+    y0 = int(np.floor(py))
+    y1 = min(y0 + 1, ymax - 1)
+    x0 = max(0, min(x0, xmax - 1))
+    y0 = max(0, min(y0, ymax - 1))
+    tx = px - float(x0)
+    ty = py - float(y0)
+    v00 = float(height_map[y0, x0])
+    v01 = float(height_map[y0, x1])
+    v10 = float(height_map[y1, x0])
+    v11 = float(height_map[y1, x1])
+    return (1.0 - tx) * (1.0 - ty) * v00 + tx * (1.0 - ty) * v01 + (1.0 - tx) * ty * v10 + tx * ty * v11
 
 
 def _to_abs_point(model: dict[str, Any], point_xy_relz: np.ndarray, safe_h: float | None) -> np.ndarray:
     x, y, z_rel = float(point_xy_relz[0]), float(point_xy_relz[1]), float(point_xy_relz[2])
-    xmin = float(model["xmin"])
-    xmax = float(model["xmax"])
-    ymin = float(model["ymin"])
-    ymax = float(model["ymax"])
-    zmin = float(model["zmin"])
-    zmax = float(model["zmax"])
+    xmin, xmax, ymin, ymax, zmin, zmax = _model_bounds(model)
     if not np.isfinite(x):
         x = 0.5 * (xmin + xmax)
     if not np.isfinite(y):
@@ -54,8 +77,8 @@ def _to_abs_point(model: dict[str, Any], point_xy_relz: np.ndarray, safe_h: floa
         np.asarray(model["H"], dtype=float),
         x,
         y,
-        int(float(model["xmax"])),
-        int(float(model["ymax"])),
+        int(xmax),
+        int(ymax),
     )
     return np.array([x, y, z_rel + ground], dtype=float)
 
@@ -68,9 +91,9 @@ def _safe_unit(vec: np.ndarray) -> np.ndarray:
 
 
 def _progress_schedule(progress_raw: np.ndarray, n_waypoints: int) -> np.ndarray:
-    base = np.linspace(1, n_waypoints, n_waypoints, dtype=float) / (n_waypoints + 1.0)
     if n_waypoints <= 0:
         return np.zeros(0, dtype=float)
+    base = np.linspace(1, n_waypoints, n_waypoints, dtype=float) / (n_waypoints + 1.0)
     centered = np.asarray(progress_raw, dtype=float).reshape(-1)
     centered = centered[:n_waypoints]
     if centered.size < n_waypoints:
@@ -102,6 +125,25 @@ def _smooth_signal(values: np.ndarray, passes: int = 1) -> np.ndarray:
     return out
 
 
+def _normalize_signal(values: np.ndarray, lower: float, upper: float, passes: int) -> np.ndarray:
+    raw = np.asarray(values, dtype=float)
+    normalized = (raw - lower) / (upper - lower) if upper > lower else np.zeros_like(raw)
+    normalized = np.clip((normalized - 0.5) * 2.0, -1.0, 1.0)
+    return _smooth_signal(normalized, passes=passes)
+
+
+def _fit_internal_waypoints(internal: np.ndarray, fallback: np.ndarray, n_waypoints: int) -> np.ndarray:
+    if internal.shape[0] < n_waypoints:
+        if internal.shape[0] > 0:
+            pad = np.repeat(internal[-1:, :], n_waypoints - internal.shape[0], axis=0)
+            return np.vstack([internal, pad])
+        return np.repeat(np.asarray(fallback, dtype=float).reshape(1, -1), n_waypoints, axis=0)
+    if internal.shape[0] > n_waypoints:
+        picks = np.linspace(0, internal.shape[0] - 1, n_waypoints).astype(int)
+        return internal[picks]
+    return internal
+
+
 def decision_to_paths(
     decision: np.ndarray,
     model: dict[str, Any],
@@ -113,13 +155,8 @@ def decision_to_paths(
     goals = np.asarray(model["goals"], dtype=float)
     if starts.shape[0] < fleet_size or goals.shape[0] < fleet_size:
         raise ValueError("Model does not contain enough starts/goals for requested fleet size")
-    safe_h = float(model["safeH"]) if "safeH" in model and model["safeH"] is not None else None
-    xmin = float(model["xmin"])
-    xmax = float(model["xmax"])
-    ymin = float(model["ymin"])
-    ymax = float(model["ymax"])
-    zmin = float(model["zmin"])
-    zmax = float(model["zmax"])
+    safe_h = _safe_height(model)
+    xmin, xmax, ymin, ymax, zmin, zmax = _model_bounds(model)
     map_diag = float(np.hypot(xmax - xmin, ymax - ymin))
     lateral_max = 0.03 * map_diag
     separation_min = float(model.get("separationMin", model.get("safeDist", 10.0)))
@@ -132,21 +169,8 @@ def decision_to_paths(
         perp_xy = np.array([-direction_xy[1], direction_xy[0]], dtype=float)
 
         schedule = _progress_schedule(block[uav_idx, :, 0], n_waypoints)
-        lateral_raw = block[uav_idx, :, 1]
-        if ymax > ymin:
-            lateral_norm = (lateral_raw - ymin) / (ymax - ymin)
-        else:
-            lateral_norm = np.zeros_like(lateral_raw)
-        lateral_norm = np.clip((lateral_norm - 0.5) * 2.0, -1.0, 1.0)
-        lateral_norm = _smooth_signal(lateral_norm, passes=2)
-
-        altitude_raw = block[uav_idx, :, 2]
-        if zmax > zmin:
-            altitude_norm = (altitude_raw - zmin) / (zmax - zmin)
-        else:
-            altitude_norm = np.zeros_like(altitude_raw)
-        altitude_norm = np.clip((altitude_norm - 0.5) * 2.0, -1.0, 1.0)
-        altitude_norm = _smooth_signal(altitude_norm, passes=1)
+        lateral_norm = _normalize_signal(block[uav_idx, :, 1], ymin, ymax, passes=2)
+        altitude_norm = _normalize_signal(block[uav_idx, :, 2], zmin, zmax, passes=1)
 
         lane_shift_xy = (uav_idx - (fleet_size - 1) / 2.0) * (0.90 * separation_min)
         waypoints_abs: list[np.ndarray] = []
@@ -180,10 +204,11 @@ def paths_to_decision(
     if len(paths_xyz) != fleet_size:
         raise ValueError(f"Expected {fleet_size} paths, got {len(paths_xyz)}")
     starts = np.asarray(model["starts"], dtype=float)
-    goals = np.asarray(model["goals"], dtype=float)
+    _ = np.asarray(model["goals"], dtype=float)  # keep interface explicit for future constraints
     height_map = np.asarray(model["H"], dtype=float)
-    xmax = int(float(model["xmax"]))
-    ymax = int(float(model["ymax"]))
+    xmin, xmax, ymin, ymax, zmin, zmax = _model_bounds(model)
+    xmax_index = int(xmax)
+    ymax_index = int(ymax)
     decision = np.zeros((fleet_size, n_waypoints, 3), dtype=float)
     for idx, path in enumerate(paths_xyz):
         path = np.asarray(path, dtype=float)
@@ -191,18 +216,12 @@ def paths_to_decision(
             raise ValueError("Each path must be an N x 3 matrix")
         # Use internal waypoints only; interpolate or trim to n_waypoints.
         internal = path[1:-1] if path.shape[0] > 2 else np.zeros((0, 3), dtype=float)
-        if internal.shape[0] < n_waypoints:
-            pad = np.repeat(internal[-1:, :], n_waypoints - internal.shape[0], axis=0) if internal.shape[0] > 0 else np.repeat(starts[idx : idx + 1], n_waypoints, axis=0)
-            internal = np.vstack([internal, pad]) if internal.shape[0] > 0 else pad
-        elif internal.shape[0] > n_waypoints:
-            picks = np.linspace(0, internal.shape[0] - 1, n_waypoints).astype(int)
-            internal = internal[picks]
+        internal = _fit_internal_waypoints(internal, starts[idx], n_waypoints)
         for j in range(n_waypoints):
             x, y, z_abs = internal[j]
-            x = float(np.clip(x, float(model["xmin"]), float(model["xmax"])))
-            y = float(np.clip(y, float(model["ymin"]), float(model["ymax"])))
-            ground = _ground_height(height_map, x, y, xmax, ymax)
-            z_rel = float(np.clip(z_abs - ground, float(model["zmin"]), float(model["zmax"])))
+            x = float(np.clip(x, xmin, xmax))
+            y = float(np.clip(y, ymin, ymax))
+            ground = _ground_height(height_map, x, y, xmax_index, ymax_index)
+            z_rel = float(np.clip(z_abs - ground, zmin, zmax))
             decision[idx, j] = np.array([x, y, z_rel], dtype=float)
-    _ = goals  # keep interface explicit for future constraints
     return decision.reshape(-1)

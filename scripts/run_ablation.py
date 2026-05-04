@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import argparse
 import sys
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -11,7 +12,10 @@ from uav_benchmark.benchmark import run_nmopso_ablation
 from uav_benchmark.config import BenchmarkParams
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the legacy NMOPSO ablation benchmark.")
+    parser.parse_args(argv)
+
     project_root = PROJECT_ROOT
     params = BenchmarkParams(
         generations=200,
@@ -25,6 +29,7 @@ def main() -> None:
         results_dir=project_root / "results" / "NMOPSO_ABLATION",
     )
     params.extra["ablationStudy"] = True
+    params.extra["legacyPathRunner"] = True
     run_nmopso_ablation(project_root, params)
 
 

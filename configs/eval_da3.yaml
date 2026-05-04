@@ -1,0 +1,17 @@
+algorithms:
+  - MOGWO
+  - MOGWO-NO-ATTENTION
+  - NSGA-II
+  - SMPSO
+  - SPEA2
+allowExperimentalAlgorithms: true
+
+problems:
+  - c_100
+
+fleet_sizes:
+  - 1
+
+generations: 50
+population: 40
+runs: 5

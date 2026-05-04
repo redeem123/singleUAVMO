@@ -2,6 +2,87 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+
+def _lookup(mapping: dict, *keys: str, default: Any) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return default
+
+
+def _parse_bool(raw: Any, default: bool = False) -> bool:
+    if raw is None:
+        return bool(default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        token = raw.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(raw)
+
+
+def _require_int(raw: Any, field_name: str, *, minimum: int | None = None) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be an integer, got {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}, got {value}")
+    return value
+
+
+def _require_float(raw: Any, field_name: str, *, minimum: float | None = None) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number, got {raw!r}") from exc
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{field_name} must be >= {minimum}, got {value}")
+    return value
+
+
+def _int_tuple(raw: Any, field_name: str, *, minimum: int | None = 1) -> tuple[int, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        values = [item.strip() for item in raw.split(",") if item.strip()]
+    elif isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        values = [raw]
+    return tuple(_require_int(item, field_name, minimum=minimum) for item in values)
+
+
+def _run_index_tuple(raw: Any) -> tuple[int, ...] | None:
+    values = [item for item in _int_tuple(raw, "run_indices", minimum=None) if item >= 1]
+    if not values:
+        return None
+    return tuple(dict.fromkeys(values))
+
+
+def _normalized_mapping(mapping: dict) -> dict:
+    normalized = dict(mapping)
+    aliases = (
+        ("problems", "problemNames"),
+        ("output_dir", "resultsDir"),
+        ("metrics", "computeMetrics"),
+    )
+    for source, target in aliases:
+        if source in normalized and target not in normalized:
+            normalized[target] = normalized[source]
+    nested_extra = normalized.get("extra")
+    if isinstance(nested_extra, dict):
+        merged = dict(nested_extra)
+        merged.update(normalized)
+        normalized = merged
+    return normalized
 
 
 @dataclass(slots=True)
@@ -31,54 +112,82 @@ class BenchmarkParams:
     write_final_hv: bool = True
     extra: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.generations = _require_int(self.generations, "generations", minimum=1)
+        self.population = _require_int(self.population, "population", minimum=1)
+        self.runs = _require_int(self.runs, "runs", minimum=1)
+        self.safe_dist = _require_float(self.safe_dist, "safe_dist", minimum=0.0)
+        self.drone_size = _require_float(self.drone_size, "drone_size", minimum=0.0)
+        self.problem_index = _require_int(self.problem_index, "problem_index", minimum=0)
+        self.fleet_size = _require_int(self.fleet_size, "fleet_size", minimum=1)
+        self.fleet_sizes = _int_tuple(self.fleet_sizes, "fleet_sizes", minimum=1)
+        self.separation_min = _require_float(self.separation_min, "separation_min", minimum=0.0)
+        self.max_turn_deg = _require_float(self.max_turn_deg, "max_turn_deg", minimum=0.0)
+        self.evaluation_budget = _require_int(self.evaluation_budget, "evaluation_budget", minimum=0)
+        self.compute_metrics = _parse_bool(self.compute_metrics, self.compute_metrics)
+        self.use_parallel = _parse_bool(self.use_parallel, self.use_parallel)
+        self.write_final_hv = _parse_bool(self.write_final_hv, self.write_final_hv)
+        self.results_dir = Path(self.results_dir)
+        self.problem_name = str(self.problem_name)
+        self.algorithm = str(self.algorithm)
+        self.parallel_mode = str(self.parallel_mode)
+        self.mode = str(self.mode).strip().lower() or "fleet"
+        self.scenario_set = str(self.scenario_set)
+        self.gpu_mode = str(self.gpu_mode)
+        if self.seed is not None:
+            self.seed = _require_int(self.seed, "seed")
+        if self.run_indices is not None:
+            self.run_indices = _run_index_tuple(self.run_indices)
+        if not isinstance(self.extra, dict):
+            raise ValueError(f"extra must be a mapping, got {type(self.extra).__name__}")
+
     @classmethod
-    def from_mapping(cls, mapping: dict) -> "BenchmarkParams":
-        params = cls()
-        params.generations = int(mapping.get("Generations", mapping.get("generations", params.generations)))
-        params.population = int(mapping.get("pop", mapping.get("population", params.population)))
-        params.runs = int(mapping.get("Runs", mapping.get("runs", params.runs)))
-        params.compute_metrics = bool(mapping.get("computeMetrics", mapping.get("compute_metrics", params.compute_metrics)))
-        params.use_parallel = bool(mapping.get("useParallel", mapping.get("use_parallel", params.use_parallel)))
-        params.parallel_mode = str(mapping.get("parallelMode", mapping.get("parallel_mode", params.parallel_mode)))
-        params.safe_dist = float(mapping.get("safeDist", mapping.get("safe_dist", params.safe_dist)))
-        params.drone_size = float(mapping.get("droneSize", mapping.get("drone_size", params.drone_size)))
-        params.results_dir = Path(mapping.get("resultsDir", mapping.get("results_dir", str(params.results_dir))))
-        params.problem_name = str(mapping.get("problemName", mapping.get("problem_name", params.problem_name)))
-        params.problem_index = int(mapping.get("problemIndex", mapping.get("problem_index", params.problem_index)))
-        if "seed" in mapping and mapping["seed"] is not None:
-            params.seed = int(mapping["seed"])
-        raw_mode = str(mapping.get("mode", params.mode)).strip().lower()
-        if raw_mode in {"fleet"}:
-            params.mode = "fleet"
-        else:
-            params.mode = raw_mode if raw_mode else params.mode
-        params.fleet_size = int(mapping.get("fleetSize", mapping.get("fleet_size", params.fleet_size)))
+    def from_mapping(cls, mapping: dict) -> BenchmarkParams:
+        mapping = _normalized_mapping(mapping)
+        defaults = cls()
+        seed = _lookup(mapping, "seed", default=defaults.seed)
+        run_indices: tuple[int, ...] | None = defaults.run_indices
+        raw_mode = str(_lookup(mapping, "mode", default=defaults.mode)).strip().lower()
+        mode = "fleet" if raw_mode in {"fleet"} else raw_mode if raw_mode else defaults.mode
+        fleet_sizes = defaults.fleet_sizes
         if "fleetSizes" in mapping or "fleet_sizes" in mapping:
-            raw = mapping.get("fleetSizes", mapping.get("fleet_sizes", ()))
-            if isinstance(raw, str):
-                params.fleet_sizes = tuple(
-                    int(item.strip()) for item in raw.split(",") if item.strip()
-                )
-            elif isinstance(raw, (list, tuple)):
-                params.fleet_sizes = tuple(int(item) for item in raw)
-        params.separation_min = float(mapping.get("separationMin", mapping.get("separation_min", params.separation_min)))
-        params.max_turn_deg = float(mapping.get("maxTurnDeg", mapping.get("max_turn_deg", params.max_turn_deg)))
-        params.evaluation_budget = int(mapping.get("evaluationBudget", mapping.get("evaluation_budget", params.evaluation_budget)))
-        params.scenario_set = str(mapping.get("scenarioSet", mapping.get("scenario_set", params.scenario_set)))
-        params.gpu_mode = str(mapping.get("gpuMode", mapping.get("gpu_mode", params.gpu_mode)))
+            fleet_sizes = _int_tuple(_lookup(mapping, "fleetSizes", "fleet_sizes", default=()), "fleet_sizes")
         if "runIndices" in mapping or "run_indices" in mapping:
-            raw_indices = mapping.get("runIndices", mapping.get("run_indices"))
-            if raw_indices is None:
-                params.run_indices = None
-            elif isinstance(raw_indices, str):
-                parsed = [int(item.strip()) for item in raw_indices.split(",") if item.strip()]
-                params.run_indices = tuple(parsed) if parsed else None
-            elif isinstance(raw_indices, (list, tuple)):
-                parsed = [int(item) for item in raw_indices]
-                params.run_indices = tuple(parsed) if parsed else None
-            else:
-                parsed = int(raw_indices)
-                params.run_indices = (parsed,) if parsed >= 1 else None
-        params.write_final_hv = bool(mapping.get("writeFinalHv", mapping.get("write_final_hv", params.write_final_hv)))
-        params.extra = dict(mapping)
-        return params
+            run_indices = _run_index_tuple(_lookup(mapping, "runIndices", "run_indices", default=None))
+        return cls(
+            generations=_lookup(mapping, "Generations", "generations", default=defaults.generations),
+            population=_lookup(mapping, "pop", "population", default=defaults.population),
+            runs=_lookup(mapping, "Runs", "runs", default=defaults.runs),
+            compute_metrics=_parse_bool(
+                _lookup(mapping, "computeMetrics", "compute_metrics", default=defaults.compute_metrics),
+                defaults.compute_metrics,
+            ),
+            use_parallel=_parse_bool(
+                _lookup(mapping, "useParallel", "use_parallel", default=defaults.use_parallel),
+                defaults.use_parallel,
+            ),
+            parallel_mode=str(_lookup(mapping, "parallelMode", "parallel_mode", default=defaults.parallel_mode)),
+            safe_dist=_lookup(mapping, "safeDist", "safe_dist", default=defaults.safe_dist),
+            drone_size=_lookup(mapping, "droneSize", "drone_size", default=defaults.drone_size),
+            results_dir=Path(_lookup(mapping, "resultsDir", "results_dir", default=str(defaults.results_dir))),
+            problem_name=str(_lookup(mapping, "problemName", "problem_name", default=defaults.problem_name)),
+            problem_index=_lookup(mapping, "problemIndex", "problem_index", default=defaults.problem_index),
+            seed=None if seed is None else seed,
+            algorithm=str(_lookup(mapping, "algorithm", default=defaults.algorithm)),
+            mode=mode,
+            fleet_size=_lookup(mapping, "fleetSize", "fleet_size", default=defaults.fleet_size),
+            fleet_sizes=fleet_sizes,
+            separation_min=_lookup(mapping, "separationMin", "separation_min", default=defaults.separation_min),
+            max_turn_deg=_lookup(mapping, "maxTurnDeg", "max_turn_deg", default=defaults.max_turn_deg),
+            evaluation_budget=_lookup(
+                mapping, "evaluationBudget", "evaluation_budget", default=defaults.evaluation_budget
+            ),
+            scenario_set=str(_lookup(mapping, "scenarioSet", "scenario_set", default=defaults.scenario_set)),
+            gpu_mode=str(_lookup(mapping, "gpuMode", "gpu_mode", default=defaults.gpu_mode)),
+            run_indices=run_indices,
+            write_final_hv=_parse_bool(
+                _lookup(mapping, "writeFinalHv", "write_final_hv", default=defaults.write_final_hv),
+                defaults.write_final_hv,
+            ),
+            extra=dict(mapping),
+        )

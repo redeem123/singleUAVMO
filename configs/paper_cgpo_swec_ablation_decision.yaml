@@ -1,0 +1,33 @@
+# Decision-focused CGPO ablation before the full paper-grade run.
+# Scope: all paper terrains, fleet size 3, lean CGPO variants.
+# Purpose: identify clearly weak or unsupported mechanisms before spending
+# compute on the full 30-run x fleet-size [1,3,5] protocol.
+allowExperimentalAlgorithms: true
+algorithms: ["CGPO"]
+cgpoAblationVariants:
+  - full
+  - random_only
+  - no_cig_edge_coupling
+  - no_ppf_pressure
+  - no_ovo_variation
+  - no_ovo_fleet_coordination
+cgpoTraceEnabled: true
+runs: 5
+generations: 150
+population: 80
+seed: 11
+mode: fleet
+fleetSizes: [3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["c_100", "m_100", "s_120"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 100
+metricInterval: 10
+resumeExistingRuns: true
+maxWorkers: 10

@@ -59,7 +59,7 @@ def capture_baseline(project_root: Path) -> dict:
                 )
                 entries.append(asdict(entry))
     summary = {
-        "project_root": str(project_root),
+        "project_root": ".",
         "entry_count": len(entries),
         "entries": entries,
     }

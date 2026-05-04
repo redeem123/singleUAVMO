@@ -1,0 +1,17 @@
+algorithms:
+  - MOGWO
+  - CMOSMA
+  - NSGA-II
+allowExperimentalAlgorithms: true
+
+problems:
+  - c_100
+  - m_100
+  - s_120
+
+fleet_sizes:
+  - 1
+
+generations: 40
+population: 40
+runs: 3

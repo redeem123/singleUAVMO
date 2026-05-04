@@ -1,0 +1,32 @@
+# Focused CGPO degradation run.
+# Budget: population 100 x 1000 generations x 1 run.
+# Scope: s_120 terrain, fleet sizes 1 and 3, lean CGPO mechanism-removal variants.
+allowExperimentalAlgorithms: true
+algorithms: ["CGPO"]
+cgpoAblationVariants:
+  - full
+  - random_only
+  - no_cig_edge_coupling
+  - no_ppf_pressure
+  - no_ovo_variation
+  - no_ovo_fleet_coordination
+cgpoTraceEnabled: true
+runs: 1
+generations: 1000
+population: 100
+seed: 11
+mode: fleet
+fleetSizes: [1, 3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["s_120"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 100
+metricInterval: 50
+resumeExistingRuns: true
+maxWorkers: 4

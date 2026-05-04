@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Weight vector generation (simplex lattice design)
 # ---------------------------------------------------------------------------
+
 
 def uniform_weight_vectors(n_obj: int, n_divisions: int = 15) -> np.ndarray:
     """Generate uniformly distributed weight vectors on the unit simplex.
@@ -52,8 +52,8 @@ def uniform_weight_vectors(n_obj: int, n_divisions: int = 15) -> np.ndarray:
 # R2 indicator (Tchebycheff-based)
 # ---------------------------------------------------------------------------
 
-def r2_indicator(pop_obj: np.ndarray, weights: np.ndarray,
-                 z_ideal: np.ndarray) -> float:
+
+def r2_indicator(pop_obj: np.ndarray, weights: np.ndarray, z_ideal: np.ndarray) -> float:
     """Compute the unary R2 indicator.
 
     Lower is better (measures distance to ideal).
@@ -75,9 +75,7 @@ def r2_indicator(pop_obj: np.ndarray, weights: np.ndarray,
     return float(np.mean(np.min(tcheby, axis=0)))
 
 
-def r2_contribution(pop_obj: np.ndarray, index: int,
-                    weights: np.ndarray,
-                    z_ideal: np.ndarray) -> float:
+def r2_contribution(pop_obj: np.ndarray, index: int, weights: np.ndarray, z_ideal: np.ndarray) -> float:
     """Marginal R2 contribution of solution *index*.
 
     Returns a positive value if the solution improves the archive
@@ -88,8 +86,7 @@ def r2_contribution(pop_obj: np.ndarray, index: int,
     return float(reduced - full)  # positive = solution is valuable
 
 
-def _all_r2_contributions(pop_obj: np.ndarray, weights: np.ndarray,
-                          z_ideal: np.ndarray) -> np.ndarray:
+def _all_r2_contributions(pop_obj: np.ndarray, weights: np.ndarray, z_ideal: np.ndarray) -> np.ndarray:
     """Compute R2 contribution for every member in a vectorized form.
 
     Uses Tchebycheff minima structure:
@@ -122,6 +119,7 @@ def _all_r2_contributions(pop_obj: np.ndarray, weights: np.ndarray,
 # ---------------------------------------------------------------------------
 # Archive update with infeasible / duplicate handling
 # ---------------------------------------------------------------------------
+
 
 def r2_archive_update(
     archive_obj: np.ndarray,
@@ -179,10 +177,7 @@ def r2_archive_update(
 
     # --- Update ideal point (monotonically improving) ---
     new_ideal = np.min(feas_obj, axis=0)
-    if z_ideal.size == feas_obj.shape[1]:
-        z_ideal = np.minimum(z_ideal, new_ideal)
-    else:
-        z_ideal = new_ideal.copy()
+    z_ideal = np.minimum(z_ideal, new_ideal) if z_ideal.size == feas_obj.shape[1] else new_ideal.copy()
 
     # --- Near-duplicate suppression ---
     nadir = np.max(feas_obj, axis=0)

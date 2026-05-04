@@ -2,51 +2,73 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import multiprocessing
 import os
 import platform
-import re
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
+from multiprocessing.pool import AsyncResult
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
-from uav_benchmark.algorithms import REGISTRY as _ALGORITHM_REGISTRY
+from uav_benchmark.algorithms import (
+    ALL_REGISTRY as _ALL_ALGORITHM_REGISTRY,
+)
+from uav_benchmark.algorithms import (
+    EXPERIMENTAL_REGISTRY as _EXPERIMENTAL_ALGORITHM_REGISTRY,
+)
+from uav_benchmark.algorithms import (
+    REGISTRY as _ALGORITHM_REGISTRY,
+)
+from uav_benchmark.benchmark_selection import (
+    _ALGORITHM_ORDER,
+    _ALGORITHM_SEED_OFFSET,
+    _TORCH_ACCELERATED_ALGORITHMS,
+    _allow_experimental_algorithms,
+    _base_problem_name,
+    _fleet_from_problem_name,
+    _requested_algorithms,
+    _requested_problem_names,
+    _variant_tasks_for_algorithm,
+)
+from uav_benchmark.benchmark_selection import (
+    _normalize_algorithm_name as _normalize_algorithm_name,
+)
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
+from uav_benchmark.exceptions import ArtifactReadError
 from uav_benchmark.io.matlab import load_mat, load_terrain_struct, save_mat
 from uav_benchmark.io.results import ensure_dir
+from uav_benchmark.model_contracts import validate_terrain_model
 from uav_benchmark.problem_generation.generate import save_fleet_scenarios
 from uav_benchmark.utils.random import seed_everything
 
+LOGGER = logging.getLogger(__name__)
 AlgorithmRunner = Callable[[dict, BenchmarkParams], Any]
+BenchmarkTask = tuple[Path, int, str, str, BenchmarkParams]
+LegacyBenchmarkTask = tuple[Path, int, str, BenchmarkParams]
 _DEFAULT_MAX_WORKERS = 14
+_PAPER_MEDIUM_BASE_PROBLEM_NAMES = (
+    "c_100",
+    "c_150",
+    "c_100_20_nofly",
+    "c_70_40_nofly",
+    "m_100",
+    "m_200",
+    "m_100_30c_nofly",
+    "m_200_20c_nofly",
+    "s_120",
+    "s_180",
+    "s_110_20_nofly",
+    "s_80_40_nofly",
+)
 
-_ALGORITHM_SEED_OFFSET: dict[str, int] = {
-    "NMOPSO": 11,
-    "MOPSO": 23,
-    "SMPSO": 29,
-    "NSGA-II": 37,
-    "NSGA-III": 41,
-    "MOEAD": 43,
-    "SPEA2": 47,
-    "MFO-SPEA2": 61,
-    "GCNMOEA": 71,
-    "CMOSMA": 59,
-    "FASTR-MOEA": 73,
-    "TACTIC-MOEA": 79,
-    "MO-MFEA": 53,
-    "MO-MFEA-II": 67,
-    "MOGWO": 83,
-    "MOGWO-NO-ATTENTION": 89,
-    "MOGWO-STANDARD-GWO": 101,
-    "APEX-SHADE": 97,
-    "TSKAC-NSGA-II": 107,
-}
 
 def _seed_for_task(base_seed: int, problem_index: int, algorithm_name: str) -> int:
     return int(base_seed) + int(problem_index) * 100 + int(_ALGORITHM_SEED_OFFSET.get(algorithm_name, 0))
@@ -57,10 +79,9 @@ def _seed_for_run(base_seed: int, problem_index: int, algorithm_name: str, run_i
 
 
 def _can_parallelize_runs(algorithm_name: str, params: BenchmarkParams) -> bool:
-    # Per-run dispatch uses isolated worker processes (multiprocessing.Pool), so all
-    # algorithms are safe to parallelize at the run level. Stateful algorithms (e.g.,
-    # RL-NMOPSO) rebuild their controller fresh per worker process call. Always True.
-    return True
+    # Torch-backed adaptive methods should stay in the current interpreter so GPU/MPS
+    # state is not lost across multiprocessing worker boundaries.
+    return not (str(algorithm_name) in _TORCH_ACCELERATED_ALGORITHMS and str(params.gpu_mode).strip().lower() != "off")
 
 
 def _next_dispatchable_task(
@@ -79,22 +100,42 @@ def _next_dispatchable_task(
     return None
 
 
-def _max_parallel_worker_slots(tasks: list[tuple[Path, int, str, BenchmarkParams]]) -> int:
+def _max_parallel_worker_slots(tasks: Sequence[BenchmarkTask | LegacyBenchmarkTask]) -> int:
     """Upper bound on run-level concurrency across all tasks."""
     slots = 0
-    for _problem_file, _problem_index, algorithm_name, run_params in tasks:
-        if _can_parallelize_runs(algorithm_name, run_params):
+    for task in tasks:
+        _problem_file, _problem_index, _algorithm_label, runner_name, run_params = _unpack_benchmark_task(task)
+        if _can_parallelize_runs(runner_name, run_params):
             slots += max(1, int(run_params.runs))
         else:
             slots += 1
     return max(1, int(slots))
 
 
+def _run_tasks_in_current_process(
+    *,
+    tasks: list[BenchmarkTask],
+    run_indices: tuple[int, ...],
+    params: BenchmarkParams,
+    task_problem_name: list[str],
+) -> None:
+    for task_index, task in enumerate(tasks):
+        problem_file, problem_index, algorithm_label, runner_name, run_params = task
+        for run_index in run_indices:
+            _execute_task_run(problem_file, problem_index, algorithm_label, runner_name, run_params, run_index)
+        _write_grouped_run_hv_summary(
+            params=params,
+            algorithm_label=algorithm_label,
+            problem_name=task_problem_name[task_index],
+            problem_index=problem_index,
+        )
+
+
 def _safe_module_version(name: str) -> str:
     try:
         module = __import__(name)
         return str(getattr(module, "__version__", "unknown"))
-    except Exception:
+    except ImportError:
         return "unavailable"
 
 
@@ -121,8 +162,8 @@ def _git_info(project_root: Path) -> dict[str, Any]:
         info["commit"] = commit
         info["branch"] = branch
         info["isDirty"] = bool(status)
-    except Exception:
-        pass
+    except (subprocess.SubprocessError, OSError):
+        LOGGER.debug("Git metadata unavailable for %s", project_root)
     return info
 
 
@@ -159,33 +200,36 @@ def _build_benchmark_manifest(
     project_root: Path,
     params: BenchmarkParams,
     fleet_sizes: tuple[int, ...],
-    problem_files: list[Path],
-    algorithms: tuple[str, ...],
+    tasks: list[BenchmarkTask],
     n_workers: int,
     created_utc: str | None = None,
 ) -> dict[str, Any]:
     created = created_utc or datetime.now(timezone.utc).isoformat()
     base_seed = int(params.seed) if params.seed is not None else 42
-    problems = [_problem_name(path) for path in problem_files]
     task_plan: list[dict[str, Any]] = []
-    for problem_index, problem in enumerate(problems, start=1):
+    problems: list[str] = []
+    algorithms_resolved: list[str] = []
+    for problem_file, problem_index, algorithm_label, runner_name, _run_params in tasks:
+        problem = _problem_name(problem_file)
         fleet_size = _fleet_from_problem_name(problem) or int(params.fleet_size)
-        for algorithm in algorithms:
-            task_plan.append(
-                {
-                    "problem": problem,
-                    "problemIndex": int(problem_index),
-                    "algorithm": str(algorithm),
-                    "fleetSize": int(fleet_size),
-                    "seedOffset": int(_ALGORITHM_SEED_OFFSET.get(algorithm, 0)),
-                    "effectiveSeed": int(_seed_for_task(base_seed, problem_index, algorithm)),
-                }
-            )
+        problems.append(problem)
+        algorithms_resolved.append(algorithm_label)
+        task_plan.append(
+            {
+                "problem": problem,
+                "problemIndex": int(problem_index),
+                "algorithm": str(algorithm_label),
+                "runner": str(runner_name),
+                "fleetSize": int(fleet_size),
+                "seedOffset": int(_ALGORITHM_SEED_OFFSET.get(runner_name, 0)),
+                "effectiveSeed": int(_seed_for_task(base_seed, problem_index, runner_name)),
+            }
+        )
     plan_payload = {
         "parameters": _params_manifest(params),
         "fleetSizesResolved": [int(size) for size in fleet_sizes],
-        "problemsResolved": problems,
-        "algorithmsResolved": list(algorithms),
+        "problemsResolved": sorted(dict.fromkeys(problems)),
+        "algorithmsResolved": list(dict.fromkeys(algorithms_resolved)),
         "taskPlan": task_plan,
         "workers": int(n_workers),
     }
@@ -209,16 +253,14 @@ def _write_benchmark_manifest(
     project_root: Path,
     params: BenchmarkParams,
     fleet_sizes: tuple[int, ...],
-    problem_files: list[Path],
-    algorithms: tuple[str, ...],
+    tasks: list[BenchmarkTask],
     n_workers: int,
 ) -> Path:
     manifest = _build_benchmark_manifest(
         project_root=project_root,
         params=params,
         fleet_sizes=fleet_sizes,
-        problem_files=problem_files,
-        algorithms=algorithms,
+        tasks=tasks,
         n_workers=n_workers,
     )
     ensure_dir(params.results_dir)
@@ -230,99 +272,12 @@ def _write_benchmark_manifest(
     return manifest_path
 
 
-def _normalize_algorithm_name(name: str) -> str:
-    key = str(name).strip().lower()
-    if key in {"nmopso"}:
-        return "NMOPSO"
-    if key in {"mopso"}:
-        return "MOPSO"
-    if key in {"smpso", "sm-pso", "sm_pso"}:
-        return "SMPSO"
-    if key in {"nsga-ii", "nsga2", "nsga_ii"}:
-        return "NSGA-II"
-    if key in {"nsga-iii", "nsga3", "nsga_iii"}:
-        return "NSGA-III"
-    if key in {"moead", "moea/d", "moea-d", "moea_d"}:
-        return "MOEAD"
-    if key in {"spea2", "spea-2", "spea_2"}:
-        return "SPEA2"
-    if key in {"mfo-spea2", "mfospea2", "mfo_spea2", "mfo-spea-2"}:
-        return "MFO-SPEA2"
-    if key in {"gcnmoea", "gcn-moea", "gcn_moea"}:
-        return "GCNMOEA"
-    if key in {"cmosma", "cmo-sma", "cmo_sma"}:
-        return "CMOSMA"
-    if key in {"fastr-moea", "fastr_moea", "fastrmoea"}:
-        return "FASTR-MOEA"
-    if key in {"tactic-moea", "tactic_moea", "tacticmoea"}:
-        return "TACTIC-MOEA"
-    if key in {"mo-mfea", "momfea"}:
-        return "MO-MFEA"
-    if key in {"mo-mfea-ii", "momfea2", "momfea-ii"}:
-        return "MO-MFEA-II"
-    if key in {"mogwo", "a2mogwo", "a2-mogwo"}:
-        return "MOGWO"
-    if key in {
-        "mogwo-no-attention",
-        "mogwo_no_attention",
-        "a2mogwo-no-attention",
-        "a2mogwo_no_attention",
-        "a2-mogwo-no-attention",
-        "a2mogwo-noattention",
-    }:
-        return "MOGWO-NO-ATTENTION"
-    if key in {
-        "mogwo-standard-gwo",
-        "mogwo_standard_gwo",
-        "a2mogwo-standard-gwo",
-        "a2mogwo_standard_gwo",
-        "a2-mogwo-standard-gwo",
-    }:
-        return "MOGWO-STANDARD-GWO"
-    if key in {"apex-shade", "apexshade", "apex_shade"}:
-        return "APEX-SHADE"
-    if key in {
-        "tskac-nsga-ii",
-        "tskac_nsga_ii",
-        "tskacnsga2",
-        "tskac-nsga2",
-        "tskac-nsgaii",
-        "tskacnsgaii",
-    }:
-        return "TSKAC-NSGA-II"
-    return str(name).strip()
-
-
-def _requested_algorithms(extra: dict[str, Any]) -> tuple[str, ...]:
-    raw = extra.get("algorithms")
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        tokens = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, (list, tuple)):
-        tokens = [str(item).strip() for item in raw if str(item).strip()]
-    else:
-        return ()
-    normalized = [_normalize_algorithm_name(token) for token in tokens]
-    if not normalized:
-        return ()
-    # Keep order while removing duplicates
-    return tuple(dict.fromkeys(normalized))
-
-
-def _requested_problem_names(extra: dict[str, Any]) -> tuple[str, ...]:
-    raw = extra.get("problemNames")
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        tokens = [item.strip() for item in raw.split(",") if item.strip()]
-    elif isinstance(raw, (list, tuple)):
-        tokens = [str(item).strip() for item in raw if str(item).strip()]
-    else:
-        return ()
-    if not tokens:
-        return ()
-    return tuple(dict.fromkeys(tokens))
+def _unpack_benchmark_task(task: BenchmarkTask | LegacyBenchmarkTask) -> BenchmarkTask:
+    if len(task) == 5:
+        problem_file, problem_index, algorithm_label, runner_name, run_params = task
+        return problem_file, problem_index, algorithm_label, runner_name, run_params
+    problem_file, problem_index, algorithm_name, run_params = task
+    return problem_file, problem_index, algorithm_name, algorithm_name, run_params
 
 
 def _resolved_run_indices(params: BenchmarkParams) -> tuple[int, ...]:
@@ -338,6 +293,15 @@ def _resolved_run_indices(params: BenchmarkParams) -> tuple[int, ...]:
     return tuple(dict.fromkeys(indices))
 
 
+def _configure_worker_python_executable() -> str:
+    executable = str(Path(sys.executable).absolute())
+    try:
+        multiprocessing.set_executable(executable)
+    except (RuntimeError, OSError):
+        return executable
+    return executable
+
+
 def _problem_name(problem_file: Path) -> str:
     name = problem_file.stem
     if name.startswith("terrainStruct_"):
@@ -345,30 +309,30 @@ def _problem_name(problem_file: Path) -> str:
     return name
 
 
-def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, AlgorithmRunner]]:
-    _known_order = [
-        "NMOPSO",
-        "MOPSO",
-        "SMPSO",
-        "NSGA-II",
-        "NSGA-III",
-        "MOEAD",
-        "SPEA2",
-        "MFO-SPEA2",
-        "GCNMOEA",
-        "CMOSMA",
-        "FASTR-MOEA",
-        "TACTIC-MOEA",
-        "MO-MFEA",
-        "MO-MFEA-II",
-        "MOGWO",
-        "MOGWO-NO-ATTENTION",
-        "MOGWO-STANDARD-GWO",
-        "APEX-SHADE",
-        "TSKAC-NSGA-II",
-    ]
-    mapping = [(name, _ALGORITHM_REGISTRY[name]) for name in _known_order if name in _ALGORITHM_REGISTRY]
-    extra = [(name, runner) for name, runner in _ALGORITHM_REGISTRY.items() if name not in _known_order]
+def _algorithm_map(
+    include_algorithms: tuple[str, ...] = (),
+    *,
+    allow_experimental: bool = False,
+) -> list[tuple[str, AlgorithmRunner]]:
+    if not include_algorithms:
+        registry = dict(_ALGORITHM_REGISTRY)
+    else:
+        registry = dict(_ALGORITHM_REGISTRY)
+        if allow_experimental:
+            registry.update(_EXPERIMENTAL_ALGORITHM_REGISTRY)
+        missing = [name for name in include_algorithms if name not in registry]
+        blocked = [name for name in missing if name in _EXPERIMENTAL_ALGORITHM_REGISTRY]
+        unknown = [name for name in missing if name not in _ALL_ALGORITHM_REGISTRY]
+        if blocked:
+            raise ValueError(
+                "Experimental algorithms require an explicit opt-in. "
+                "Set allowExperimentalAlgorithms=true to use: " + ", ".join(blocked)
+            )
+        if unknown:
+            raise ValueError("Unknown algorithm(s): " + ", ".join(unknown))
+
+    mapping = [(name, registry[name]) for name in _ALGORITHM_ORDER if name in registry]
+    extra = [(name, runner) for name, runner in registry.items() if name not in _ALGORITHM_ORDER]
     mapping.extend(sorted(extra, key=lambda item: item[0]))
     if not include_algorithms:
         return mapping
@@ -376,33 +340,157 @@ def _algorithm_map(include_algorithms: tuple[str, ...] = ()) -> list[tuple[str, 
     return [item for item in mapping if item[0] in include_set]
 
 
-def _fleet_from_problem_name(problem_name: str) -> int | None:
-    match = re.search(r"_uav(\d+)$", problem_name)
-    if not match:
-        return None
-    return int(match.group(1))
+def _resolve_algorithm_runner(name: str) -> AlgorithmRunner:
+    if name in _ALGORITHM_REGISTRY:
+        return _ALGORITHM_REGISTRY[name]
+    if name in _EXPERIMENTAL_ALGORITHM_REGISTRY:
+        return _EXPERIMENTAL_ALGORITHM_REGISTRY[name]
+    return _ALL_ALGORITHM_REGISTRY[name]
 
 
-def _base_problem_name(problem_name: str) -> str:
-    return re.sub(r"_uav\d+$", "", problem_name)
+def _resolve_benchmark_seed(params: BenchmarkParams) -> BenchmarkParams:
+    if params.seed is not None:
+        return params
+
+    import secrets
+
+    resolved_seed = secrets.randbelow(2**31)
+    LOGGER.info(
+        "No --seed provided; using randomly generated seed=%d. Pass --seed %d to reproduce this run.",
+        resolved_seed,
+        resolved_seed,
+    )
+    return replace(params, seed=resolved_seed)
+
+
+def _resolved_fleet_sizes(params: BenchmarkParams) -> tuple[int, ...]:
+    raw_fleet_sizes = params.fleet_sizes if params.fleet_sizes else (int(params.fleet_size),)
+    return tuple(dict.fromkeys(max(1, int(size)) for size in raw_fleet_sizes))
+
+
+def _maybe_generate_fleet_scenarios(
+    project_root: Path,
+    params: BenchmarkParams,
+    fleet_sizes: tuple[int, ...],
+) -> list[Path]:
+    if params.scenario_set != "paper_medium":
+        return []
+    generated = save_fleet_scenarios(
+        project_root=project_root,
+        base_problem_names=list(_PAPER_MEDIUM_BASE_PROBLEM_NAMES),
+        fleet_sizes=tuple(int(size) for size in fleet_sizes),
+        seed=int(params.seed) if params.seed is not None else 42,
+        separation_min=float(params.separation_min),
+        mission_prefix="paper_medium",
+        output_dir=params.results_dir / "generated_problems",
+    )
+    for path in generated:
+        load_terrain_struct(path)
+    return generated
+
+
+def _problem_files_by_name(*groups: list[Path]) -> list[Path]:
+    by_name: dict[str, Path] = {}
+    for group in groups:
+        for path in group:
+            by_name[_problem_name(path)] = path
+    return sorted(by_name.values(), key=lambda path: _problem_name(path))
+
+
+def _select_problem_files(
+    all_problem_files: list[Path],
+    params: BenchmarkParams,
+    fleet_sizes: tuple[int, ...],
+) -> list[Path]:
+    requested_fleets = set(int(size) for size in fleet_sizes)
+    explicit_uav1_bases = {
+        _base_problem_name(_problem_name(path))
+        for path in all_problem_files
+        if _fleet_from_problem_name(_problem_name(path)) == 1
+    }
+
+    problem_files: list[Path] = []
+    for path in all_problem_files:
+        problem_name = _problem_name(path)
+        fleet = _fleet_from_problem_name(problem_name)
+        if fleet is None:
+            if 1 in requested_fleets and _base_problem_name(problem_name) not in explicit_uav1_bases:
+                problem_files.append(path)
+            continue
+        if fleet in requested_fleets:
+            problem_files.append(path)
+
+    if not problem_files:
+        problem_files = [path for path in all_problem_files if "_uav" in path.stem]
+
+    requested_problem_names = _requested_problem_names(params.extra)
+    if requested_problem_names:
+        requested_set = set(requested_problem_names)
+        problem_files = [
+            path
+            for path in problem_files
+            if _problem_name(path) in requested_set or _base_problem_name(_problem_name(path)) in requested_set
+        ]
+    return problem_files
+
+
+def _build_benchmark_tasks(problem_files: list[Path], params: BenchmarkParams) -> list[BenchmarkTask]:
+    tasks: list[BenchmarkTask] = []
+    requested = _requested_algorithms(params.extra)
+    allow_experimental = _allow_experimental_algorithms(params.extra)
+    algo_map = _algorithm_map(requested, allow_experimental=allow_experimental)
+    for problem_index, problem_file in enumerate(problem_files, start=1):
+        problem_name = _problem_name(problem_file)
+        base_problem = _base_problem_name(problem_name)
+        run_params = replace(params, problem_name=base_problem)
+        for algorithm_name, _runner in algo_map:
+            tasks.extend(
+                (
+                    problem_file,
+                    problem_index,
+                    algorithm_label,
+                    runner_name,
+                    variant_params,
+                )
+                for algorithm_label, runner_name, variant_params in _variant_tasks_for_algorithm(
+                    algorithm_name,
+                    run_params,
+                )
+            )
+    return tasks
+
+
+def _worker_count(tasks: list[BenchmarkTask], params: BenchmarkParams) -> int:
+    worker_cap = (
+        int(params.extra.get("maxWorkers", _DEFAULT_MAX_WORKERS))
+        if isinstance(params.extra, dict)
+        else _DEFAULT_MAX_WORKERS
+    )
+    cpu_count = os.cpu_count() or 1
+    max_parallel_tasks = _max_parallel_worker_slots(tasks)
+    if worker_cap > 0:
+        return min(max_parallel_tasks, worker_cap, cpu_count)
+    return min(max_parallel_tasks, cpu_count)
 
 
 def _execute_task_run(
     problem_file: Path,
     problem_index: int,
-    algorithm_name: str,
+    algorithm_label: str,
+    runner_name: str,
     params: BenchmarkParams,
     run_index: int,
 ) -> None:
     """Worker function that executes exactly one run index."""
     base_seed = int(params.seed) if params.seed is not None else 42
-    seed_everything(_seed_for_run(base_seed, problem_index, algorithm_name, run_index))
+    seed_everything(_seed_for_run(base_seed, problem_index, runner_name, run_index))
 
     terrain = load_terrain_struct(problem_file)
     terrain["safeDist"] = params.safe_dist
     terrain["droneSize"] = params.drone_size
     terrain["separationMin"] = params.separation_min
     terrain["maxTurnDeg"] = params.max_turn_deg
+    terrain = validate_terrain_model(terrain, context=str(problem_file))
 
     name = _problem_name(problem_file)
     fleet_size = _fleet_from_problem_name(name) or int(params.fleet_size)
@@ -413,33 +501,35 @@ def _execute_task_run(
         fleet_size=fleet_size,
         run_indices=(int(run_index),),
         write_final_hv=False,
+        algorithm=algorithm_label,
     )
 
-    runner = _ALGORITHM_REGISTRY[algorithm_name]
+    runner = _resolve_algorithm_runner(runner_name)
     algo_params = replace(
         run_params,
-        results_dir=params.results_dir / algorithm_name,
-        algorithm=algorithm_name,
+        results_dir=params.results_dir / algorithm_label,
+        algorithm=algorithm_label,
     )
     ensure_dir(algo_params.results_dir)
-    print(f"[PID {os.getpid()}] Starting {algorithm_name} / {name} / Run_{int(run_index)}")
+    print(f"[PID {os.getpid()}] Starting {algorithm_label} / {name} / Run_{int(run_index)}")
     runner(terrain, algo_params)
-    print(f"[PID {os.getpid()}] Finished {algorithm_name} / {name} / Run_{int(run_index)}")
+    print(f"[PID {os.getpid()}] Finished {algorithm_label} / {name} / Run_{int(run_index)}")
 
 
 def _write_grouped_run_hv_summary(
     params: BenchmarkParams,
-    algorithm_name: str,
+    algorithm_label: str,
     problem_name: str,
     problem_index: int,
 ) -> None:
     if not params.compute_metrics:
         return
-    results_path = params.results_dir / algorithm_name / problem_name
+    results_path = params.results_dir / algorithm_label / problem_name
     ensure_dir(results_path)
-    scores = np.zeros((params.runs, 2), dtype=float)
+    scores: list[list[float]] = []
+    completed_run_indices: list[int] = []
     objective_count = 4
-    for run_index in range(1, params.runs + 1):
+    for run_index in _resolved_run_indices(params):
         popobj_path = results_path / f"Run_{run_index}" / "final_popobj.mat"
         if not popobj_path.exists():
             continue
@@ -449,120 +539,62 @@ def _write_grouped_run_hv_summary(
             matrix = np.asarray(matrix_raw, dtype=float) if matrix_raw is not None else np.zeros((0, 0), dtype=float)
             if matrix.size == 0:
                 continue
-            scores[run_index - 1, 0] = cal_metric(1, matrix, problem_index, objective_count)
-            scores[run_index - 1, 1] = cal_metric(2, matrix, problem_index, objective_count)
-        except Exception:
+            scores.append(
+                [
+                    cal_metric(1, matrix, problem_index, objective_count),
+                    cal_metric(2, matrix, problem_index, objective_count),
+                ]
+            )
+            completed_run_indices.append(int(run_index))
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            LOGGER.warning("Skipping unreadable metric artifact %s: %s", popobj_path, exc)
             continue
-    save_mat(results_path / "final_hv.mat", {"bestScores": scores})
+        except ArtifactReadError as exc:
+            LOGGER.warning("Skipping invalid metric artifact %s: %s", popobj_path, exc)
+            continue
+    save_mat(
+        results_path / "final_hv.mat",
+        {
+            "bestScores": np.asarray(scores, dtype=float).reshape(-1, 2),
+            "runIndices": np.asarray(completed_run_indices, dtype=int).reshape(-1, 1),
+        },
+    )
 
 
 def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
-    # Resolve seed=None to a random seed so all workers share the same base.
-    if params.seed is None:
-        import secrets
-        import logging
-        resolved_seed = secrets.randbelow(2**31)
-        logging.getLogger(__name__).info(
-            "No --seed provided; using randomly generated seed=%d. "
-            "Pass --seed %d to reproduce this run.", resolved_seed, resolved_seed
-        )
-        params = replace(params, seed=resolved_seed)
+    _configure_worker_python_executable()
+    params = _resolve_benchmark_seed(params)
 
     problems_dir = project_root / "problems"
-    all_problem_files = sorted(problems_dir.glob("*.mat"))
-    raw_fleet_sizes = params.fleet_sizes if params.fleet_sizes else (int(params.fleet_size),)
-    fleet_sizes = tuple(dict.fromkeys(max(1, int(size)) for size in raw_fleet_sizes))
-    base_names = [
-        "c_100",
-        "c_150",
-        "c_100_20_nofly",
-        "c_70_40_nofly",
-        "m_100",
-        "m_200",
-        "m_100_30c_nofly",
-        "m_200_20c_nofly",
-        "s_120",
-        "s_180",
-        "s_110_20_nofly",
-        "s_80_40_nofly",
-    ]
-    if params.scenario_set == "paper_medium":
-        save_fleet_scenarios(
-            project_root=project_root,
-            base_problem_names=base_names,
-            fleet_sizes=tuple(int(size) for size in fleet_sizes),
-            seed=int(params.seed) if params.seed is not None else 42,
-            separation_min=float(params.separation_min),
-            mission_prefix="paper_medium",
-        )
-        all_problem_files = sorted(problems_dir.glob("*.mat"))
-
-    requested_fleets = set(int(size) for size in fleet_sizes)
-    explicit_uav1_bases = {
-        _base_problem_name(_problem_name(path))
-        for path in all_problem_files
-        if _fleet_from_problem_name(_problem_name(path)) == 1
-    }
-    problem_files: list[Path] = []
-    for path in all_problem_files:
-        problem_name = _problem_name(path)
-        fleet = _fleet_from_problem_name(problem_name)
-        if fleet is None:
-            # Base scenario files (without _uav suffix) represent legacy-path cases.
-            if 1 in requested_fleets and _base_problem_name(problem_name) not in explicit_uav1_bases:
-                problem_files.append(path)
-            continue
-        if fleet in requested_fleets:
-            problem_files.append(path)
-    if not problem_files:
-        problem_files = [path for path in all_problem_files if "_uav" in path.stem]
-    requested_problem_names = _requested_problem_names(params.extra)
-    if requested_problem_names:
-        requested_set = set(requested_problem_names)
-        problem_files = [
-            path
-            for path in problem_files
-            if _problem_name(path) in requested_set or _base_problem_name(_problem_name(path)) in requested_set
-        ]
+    fleet_sizes = _resolved_fleet_sizes(params)
     ensure_dir(params.results_dir)
+    generated_problem_files = _maybe_generate_fleet_scenarios(project_root, params, fleet_sizes)
+    all_problem_files = _problem_files_by_name(
+        sorted(problems_dir.glob("*.mat")),
+        generated_problem_files,
+    )
+    problem_files = _select_problem_files(all_problem_files, params, fleet_sizes)
 
-    # Build task list: all (problem, algorithm) combinations
-    tasks: list[tuple[Path, int, str, BenchmarkParams]] = []
-    requested = _requested_algorithms(params.extra)
-    algo_map = _algorithm_map(requested)
-    algo_names = tuple(name for name, _runner in algo_map)
-    for problem_index, problem_file in enumerate(problem_files, start=1):
-        problem_name = _problem_name(problem_file)
-        base_problem = _base_problem_name(problem_name)
-        run_params = replace(params, problem_name=base_problem)
-        for algorithm_name, _runner in algo_map:
-            tasks.append((problem_file, problem_index, algorithm_name, run_params))
+    tasks = _build_benchmark_tasks(problem_files, params)
 
     if not tasks:
         manifest_path = _write_benchmark_manifest(
             project_root=project_root,
             params=params,
             fleet_sizes=fleet_sizes,
-            problem_files=problem_files,
-            algorithms=algo_names,
+            tasks=tasks,
             n_workers=0,
         )
         print(f"benchmark_manifest={manifest_path}")
         print("No benchmark tasks found for the selected mode/scenario settings.")
         return
 
-    worker_cap = int(params.extra.get("maxWorkers", _DEFAULT_MAX_WORKERS)) if isinstance(params.extra, dict) else _DEFAULT_MAX_WORKERS
-    max_parallel_tasks = _max_parallel_worker_slots(tasks)
-    if worker_cap > 0:
-        n_workers = min(max_parallel_tasks, worker_cap, os.cpu_count() or 1)
-    else:
-        n_workers = min(max_parallel_tasks, os.cpu_count() or 1)
+    n_workers = _worker_count(tasks, params)
     manifest_path = _write_benchmark_manifest(
         project_root=project_root,
         params=params,
         fleet_sizes=fleet_sizes,
-        problem_files=problem_files,
-        algorithms=algo_names,
+        tasks=tasks,
         n_workers=n_workers,
     )
     print(f"benchmark_manifest={manifest_path}")
@@ -576,18 +608,27 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
     task_problem_name: list[str] = []
 
     for task_index, task in enumerate(tasks, start=1):
-        problem_file, _problem_index, algorithm_name, run_params = task
+        problem_file, _problem_index, algorithm_label, runner_name, run_params = task
         problem_name = _problem_name(problem_file)
         task_problem_name.append(problem_name)
-        parallel_runs = _can_parallelize_runs(algorithm_name, run_params)
+        parallel_runs = _can_parallelize_runs(runner_name, run_params)
         run_workers = min(n_workers, max(1, int(params.runs))) if parallel_runs else 1
         task_run_limit.append(run_workers)
         print(
-            f"Task {task_index}/{len(tasks)}: {algorithm_name} / {problem_name} "
+            f"Task {task_index}/{len(tasks)}: {algorithm_label} / {problem_name} "
             f"using up to {run_workers} worker(s) across {len(run_indices)} run(s)"
         )
 
-    in_flight: list[tuple[multiprocessing.pool.AsyncResult, int, int]] = []
+    if all(not _can_parallelize_runs(runner_name, run_params) for _, _, _, runner_name, run_params in tasks):
+        _run_tasks_in_current_process(
+            tasks=tasks,
+            run_indices=run_indices,
+            params=params,
+            task_problem_name=task_problem_name,
+        )
+        return
+
+    in_flight: list[tuple[AsyncResult, int, int]] = []
     dispatch_cursor = 0
     with multiprocessing.Pool(processes=n_workers) as pool:
         while True:
@@ -601,10 +642,10 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
                 if dispatch_task_index is None:
                     break
                 run_index = task_pending_runs[dispatch_task_index].pop(0)
-                problem_file, problem_index, algorithm_name, run_params = tasks[dispatch_task_index]
+                problem_file, problem_index, algorithm_label, runner_name, run_params = tasks[dispatch_task_index]
                 result = pool.apply_async(
                     _execute_task_run,
-                    args=(problem_file, problem_index, algorithm_name, run_params, run_index),
+                    args=(problem_file, problem_index, algorithm_label, runner_name, run_params, run_index),
                 )
                 task_active_runs[dispatch_task_index] += 1
                 in_flight.append((result, dispatch_task_index, run_index))
@@ -614,7 +655,7 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
                 break
 
             completed_any = False
-            remaining: list[tuple[multiprocessing.pool.AsyncResult, int, int]] = []
+            remaining: list[tuple[AsyncResult, int, int]] = []
             for result, dispatch_task_index, _run_index in in_flight:
                 if result.ready():
                     result.get()
@@ -625,10 +666,12 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
                         and task_active_runs[dispatch_task_index] == 0
                         and not task_finalized[dispatch_task_index]
                     ):
-                        _problem_file, problem_index, algorithm_name, _run_params = tasks[dispatch_task_index]
+                        _problem_file, problem_index, algorithm_label, _runner_name, _run_params = tasks[
+                            dispatch_task_index
+                        ]
                         _write_grouped_run_hv_summary(
                             params=params,
-                            algorithm_name=algorithm_name,
+                            algorithm_label=algorithm_label,
                             problem_name=task_problem_name[dispatch_task_index],
                             problem_index=problem_index,
                         )
@@ -643,10 +686,10 @@ def run_benchmark(project_root: Path, params: BenchmarkParams) -> None:
     for task_index, task in enumerate(tasks):
         if task_finalized[task_index]:
             continue
-        _problem_file, problem_index, algorithm_name, _run_params = task
+        _problem_file, problem_index, algorithm_label, _runner_name, _run_params = task
         _write_grouped_run_hv_summary(
             params=params,
-            algorithm_name=algorithm_name,
+            algorithm_label=algorithm_label,
             problem_name=task_problem_name[task_index],
             problem_index=problem_index,
         )
@@ -661,9 +704,7 @@ def run_nmopso_ablation(project_root: Path, params: BenchmarkParams) -> None:
     seed_everything(params.seed)
     problems_dir = project_root / "problems"
     problem_files = [
-        path
-        for path in sorted(problems_dir.glob("*.mat"))
-        if _fleet_from_problem_name(_problem_name(path)) is None
+        path for path in sorted(problems_dir.glob("*.mat")) if _fleet_from_problem_name(_problem_name(path)) is None
     ]
     ensure_dir(params.results_dir)
     runner = _ALGORITHM_REGISTRY.get("NMOPSO")
@@ -673,6 +714,7 @@ def run_nmopso_ablation(project_root: Path, params: BenchmarkParams) -> None:
         terrain = load_terrain_struct(problem_file)
         terrain["safeDist"] = params.safe_dist
         terrain["droneSize"] = params.drone_size
+        terrain = validate_terrain_model(terrain, context=str(problem_file))
         name = _problem_name(problem_file)
         run_params = replace(params, problem_name=name, problem_index=problem_index)
         runner(terrain, run_params)

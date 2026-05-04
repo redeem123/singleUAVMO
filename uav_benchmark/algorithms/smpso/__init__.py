@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """SMPSO runner adapted for this benchmark.
 
 Core update rules follow the PlatEMO SMPSO operator provided by the user:
@@ -7,6 +5,8 @@ Core update rules follow the PlatEMO SMPSO operator provided by the user:
 - deterministic boundary-back velocity damping,
 - polynomial mutation.
 """
+
+from __future__ import annotations
 
 import copy
 import time
@@ -142,7 +142,9 @@ def _smpso_operator(
 
         temp = site & (mu <= 0.5)
         if np.any(temp):
-            base = 2.0 * mu + (1.0 - 2.0 * mu) * np.power(np.clip(1.0 - (off_dec - lower_m) / span_safe, 0.0, 1.0), dis_pow)
+            base = 2.0 * mu + (1.0 - 2.0 * mu) * np.power(
+                np.clip(1.0 - (off_dec - lower_m) / span_safe, 0.0, 1.0), dis_pow
+            )
             delta_q = np.power(np.clip(base, 0.0, None), inv_dis_pow) - 1.0
             off_dec[temp] = off_dec[temp] + span[temp] * delta_q[temp]
 
@@ -220,10 +222,15 @@ def _run_fleet_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         pbest_candidates = [_clone_candidate(candidates[idx], vector=population[idx]) for idx in range(len(candidates))]
         gbest, crowd_dis = _update_gbest(pbest_candidates, archive_size)
         if not gbest:
-            gbest = [_clone_candidate(candidates[idx], vector=population[idx]) for idx in range(min(len(candidates), archive_size))]
+            gbest = [
+                _clone_candidate(candidates[idx], vector=population[idx])
+                for idx in range(min(len(candidates), archive_size))
+            ]
             crowd_dis = np.ones(len(gbest), dtype=float)
 
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             if gbest:
@@ -250,7 +257,10 @@ def _run_fleet_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
 
             gbest, crowd_dis = _update_gbest(gbest + candidates, archive_size)
             if not gbest:
-                gbest = [_clone_candidate(candidates[idx], vector=population[idx]) for idx in range(min(len(candidates), archive_size))]
+                gbest = [
+                    _clone_candidate(candidates[idx], vector=population[idx])
+                    for idx in range(min(len(candidates), archive_size))
+                ]
                 crowd_dis = np.ones(len(gbest), dtype=float)
 
             pbest_vectors, pbest_candidates = _update_pbest(
@@ -265,8 +275,12 @@ def _run_fleet_smpso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
                 report_matrix = _candidate_matrix(report_candidates)
                 if generation == 1 or generation == params.generations or generation % metric_interval == 0:
                     if report_matrix.size > 0:
-                        hv_history[generation - 1, 0] = cal_metric(1, report_matrix, params.problem_index, objective_count)
-                        hv_history[generation - 1, 1] = cal_metric(2, report_matrix, params.problem_index, objective_count)
+                        hv_history[generation - 1, 0] = cal_metric(
+                            1, report_matrix, params.problem_index, objective_count
+                        )
+                        hv_history[generation - 1, 1] = cal_metric(
+                            2, report_matrix, params.problem_index, objective_count
+                        )
                     else:
                         hv_history[generation - 1] = 0.0
                 elif generation > 1:

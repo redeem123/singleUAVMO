@@ -1,0 +1,21 @@
+# Focused TSKAC-NSGA-II run matched to the CGPO/SEM-4D/CMOSMA protocol.
+mode: fleet
+scenarioSet: paper_medium
+algorithms:
+  - TSKAC-NSGA-II
+allowExperimentalAlgorithms: true
+generations: 500
+population: 100
+runs: 1
+computeMetrics: true
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [3, 5]
+seed: 11
+gpuMode: off
+problemNames: ["c_100", "m_100", "s_120"]
+metricInterval: 10
+resumeExistingRuns: false
+maxWorkers: 6

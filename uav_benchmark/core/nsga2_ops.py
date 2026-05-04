@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import math
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -39,7 +38,10 @@ def _ens_ss(pop_obj: np.ndarray, n_sort: int) -> tuple[np.ndarray, int]:
                 if front_no[compare_index] != max_front:
                     continue
                 compare_objective = 1
-                while compare_objective < objective_count and unique_obj[candidate_index, compare_objective] >= unique_obj[compare_index, compare_objective]:
+                while (
+                    compare_objective < objective_count
+                    and unique_obj[candidate_index, compare_objective] >= unique_obj[compare_index, compare_objective]
+                ):
                     compare_objective += 1
                 dominated = compare_objective >= objective_count
                 if dominated or objective_count == 2:
@@ -73,7 +75,11 @@ def _t_ens(pop_obj: np.ndarray, n_sort: int) -> tuple[np.ndarray, int]:
             query = forest[max_front - 1]
             while True:
                 objective_cursor = 0
-                while objective_cursor < objective_count - 1 and unique_obj[point_index, objective_order[query, objective_cursor]] >= unique_obj[query, objective_order[query, objective_cursor]]:
+                while (
+                    objective_cursor < objective_count - 1
+                    and unique_obj[point_index, objective_order[query, objective_cursor]]
+                    >= unique_obj[query, objective_order[query, objective_cursor]]
+                ):
                     objective_cursor += 1
                 if objective_cursor == objective_count - 1:
                     break
@@ -131,7 +137,9 @@ def crowding_distance(pop_obj: np.ndarray, front_no: np.ndarray) -> np.ndarray:
             if not np.isfinite(denominator) or denominator <= 0:
                 continue
             for rank in range(1, order.size - 1):
-                distance[order[rank]] += (pop_obj[order[rank + 1], objective_index] - pop_obj[order[rank - 1], objective_index]) / denominator
+                distance[order[rank]] += (
+                    pop_obj[order[rank + 1], objective_index] - pop_obj[order[rank - 1], objective_index]
+                ) / denominator
     return distance
 
 
@@ -169,7 +177,9 @@ def environmental_selection(
     return selected_population, front_no[next_mask], crowding[next_mask]
 
 
-def f_operator(population: Sequence[Chromosome], mating_pool: np.ndarray, boundary: np.ndarray, model: dict) -> list[Chromosome]:
+def f_operator(
+    population: Sequence[Chromosome], mating_pool: np.ndarray, boundary: np.ndarray, model: dict
+) -> list[Chromosome]:
     n_select = int(mating_pool.shape[0])
     if n_select == 0:
         return []
@@ -212,7 +222,11 @@ def f_operator(population: Sequence[Chromosome], mating_pool: np.ndarray, bounda
     lower_mask = mutation_mask & (mutation_mu < 0.5)
     denominator = max_values - min_values
     offspring[lower_mask] += denominator[lower_mask] * (
-        (2.0 * mutation_mu[lower_mask] + (1.0 - 2.0 * mutation_mu[lower_mask]) * (1.0 - (offspring[lower_mask] - min_values[lower_mask]) / denominator[lower_mask]) ** (dis_m + 1.0))
+        (
+            2.0 * mutation_mu[lower_mask]
+            + (1.0 - 2.0 * mutation_mu[lower_mask])
+            * (1.0 - (offspring[lower_mask] - min_values[lower_mask]) / denominator[lower_mask]) ** (dis_m + 1.0)
+        )
         ** (1.0 / (dis_m + 1.0))
         - 1.0
     )

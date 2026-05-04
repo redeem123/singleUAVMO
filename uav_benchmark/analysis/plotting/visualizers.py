@@ -37,7 +37,7 @@ def _feasible_indices(run_dir: Path, available_indices: set[int]) -> list[int]:
         return []
     try:
         data = load_mat(final_popobj)
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return []
     if "PopObj" not in data:
         return []
@@ -110,8 +110,7 @@ def path_visualizer(
     axes.plot_surface(xv, yv, z_grid, cmap="YlGnBu", alpha=0.70, linewidth=0, zorder=1)
     # Ground shadow: dashed projection on the floor for spatial context.
     z_floor = np.full_like(z_draw, float(np.nanmin(z_grid)))
-    axes.plot(path[:, 0], path[:, 1], z_floor, color="gray", linewidth=1.0,
-              linestyle="--", alpha=0.5, zorder=2)
+    axes.plot(path[:, 0], path[:, 1], z_floor, color="gray", linewidth=1.0, linestyle="--", alpha=0.5, zorder=2)
     # Path itself – always on top of surface.
     axes.plot(path[:, 0], path[:, 1], z_draw, color="#ff0000", linewidth=2.8, alpha=1.0, zorder=10)
     axes.scatter(path[0, 0], path[0, 1], z_draw[0], color="green", s=60, zorder=11)

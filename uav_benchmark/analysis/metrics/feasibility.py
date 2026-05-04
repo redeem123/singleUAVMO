@@ -49,10 +49,7 @@ def load_mission_feasible_mask(
         mask = np.ones(count, dtype=bool)
     else:
         mask = np.asarray(base_mask, dtype=bool).reshape(-1)
-        if mask.size != count:
-            mask = np.ones(count, dtype=bool)
-        else:
-            mask = mask.copy()
+        mask = np.ones(count, dtype=bool) if mask.size != count else mask.copy()
 
     fallback = mask.copy()
     mission_file = run_dir / "mission_stats.mat"
@@ -61,7 +58,7 @@ def load_mission_feasible_mask(
 
     try:
         payload = load_mat(mission_file)
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return fallback
 
     mission_mask_applied = False

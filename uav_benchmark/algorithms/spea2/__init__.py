@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """SPEA2 runner adapted for this benchmark.
 
 Core evolutionary flow is inherited from the PlatEMO SPEA2 implementation
 (E. Zitzler, M. Laumanns, and L. Thiele, 2001; PlatEMO educational codebase),
 then adapted to this repository's fleet evaluation and artifact pipeline.
 """
+
+from __future__ import annotations
 
 import time
 from typing import Any
@@ -23,14 +23,12 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pareto_utils import _pairwise_distance, _sanitize_objectives
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
-
-from uav_benchmark.algorithms.shared.pareto_utils import _sanitize_objectives, _pairwise_distance
 
 
 def _cal_fitness(pop_obj: np.ndarray) -> np.ndarray:
@@ -178,12 +176,16 @@ def _run_fleet_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarr
         population = np.random.uniform(lower, upper, size=(pop_size, dimensions))
         candidates = _evaluate_population(population, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
         fitness = _cal_fitness(_candidate_matrix(candidates))
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             mating_pool = _tournament_selection(2, pop_size, fitness)
             offspring = _sbx_mutation(population[mating_pool], lower, upper)
-            offspring_candidates = _evaluate_population(offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            offspring_candidates = _evaluate_population(
+                offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
 
             merged_vectors = np.vstack([population, offspring])
             merged_candidates = candidates + offspring_candidates

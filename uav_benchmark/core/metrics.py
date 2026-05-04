@@ -40,7 +40,9 @@ def _insert(point: np.ndarray, objective_index: int, points: np.ndarray) -> np.n
     return np.vstack(merged)
 
 
-def _add_slice(slice_entry: tuple[float, np.ndarray], slices: list[tuple[float, np.ndarray]]) -> list[tuple[float, np.ndarray]]:
+def _add_slice(
+    slice_entry: tuple[float, np.ndarray], slices: list[tuple[float, np.ndarray]]
+) -> list[tuple[float, np.ndarray]]:
     for index, existing in enumerate(slices):
         if np.array_equal(existing[1], slice_entry[1]):
             slices[index] = (existing[0] + slice_entry[0], existing[1])
@@ -140,7 +142,6 @@ def pure_diversity(pop_obj: np.ndarray, max_points: int = 200) -> float:
     score = 0.0
     for _ in range(n_points - 1):
         max_inner_iters = n_points * 2  # safety cap
-        found = False
         for _inner in range(max_inner_iters):
             nearest = np.argmin(distance, axis=1)
             nearest_distance = distance[np.arange(n_points), nearest]
@@ -159,7 +160,6 @@ def pure_diversity(pop_obj: np.ndarray, max_points: int = 200) -> float:
                     break
                 reachable = expanded
             if not reachable[target]:
-                found = True
                 break
         connect[source, target] = True
         connect[target, source] = True
@@ -185,11 +185,12 @@ def cal_metric(
         finite = pop_obj[np.all(np.isfinite(pop_obj), axis=1)]
         if finite.size == 0:
             return 0.0
-        if ref_point is None:
+        hv_ref = ref_point
+        if hv_ref is None:
             max_values = np.max(finite, axis=0)
-            ref_point = max_values * HV_REF_MARGIN
-            ref_point[ref_point <= 0] = 1.0
-        return hypervolume(finite, ref_point, hv_samples, rng=rng)
+            hv_ref = max_values * HV_REF_MARGIN
+            hv_ref[hv_ref <= 0] = 1.0
+        return hypervolume(finite, hv_ref, hv_samples, rng=rng)
     if pop_obj.shape[1] != objective_count and pop_obj.shape[0] == objective_count:
         pop_obj = pop_obj.T
     # Filter inf rows before the expensive O(n^3) pure_diversity call

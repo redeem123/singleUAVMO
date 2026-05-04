@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 _MATLAB_DRIVER_SOURCE = r"""
 function generate_research_plots_cli(projectRoot, resultsDir)
 %GENERATE_RESEARCH_PLOTS_CLI Generate benchmark plots from results folder.
@@ -336,15 +335,17 @@ def _quote_matlab_string(value: str) -> str:
 
 def generate_research_plots(project_root: Path, results_dir: Path | None = None) -> None:
     project_root = project_root.resolve()
-    results_dir = (results_dir.resolve() if results_dir is not None else (project_root / "results").resolve())
+    results_dir = results_dir.resolve() if results_dir is not None else (project_root / "results").resolve()
 
     matlab_bin = shutil.which("matlab")
     if matlab_bin is None:
         import warnings
+
         warnings.warn(
             "MATLAB not found in PATH; skipping research plots. "
             "Install MATLAB and ensure it is on PATH to generate plots.",
-            RuntimeWarning, stacklevel=2,
+            RuntimeWarning,
+            stacklevel=2,
         )
         return
 

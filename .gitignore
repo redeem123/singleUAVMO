@@ -27,6 +27,8 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # Testing
+.coverage
+htmlcov/
 .hypothesis/
 .pytest_cache/
 
@@ -36,13 +38,19 @@ results/*
 logs/*
 !logs/README.md
 *.pid
+/output/
+/tmp/
+/tmp_inspect/
+/archives/
 
 # Research workspace
+research/reference_code/
 research/working/
 research/papers/
 research/writing/
 
 # Documentation / LaTeX build outputs
+paper/**/tmp_render/
 *.aux
 *.bbl
 *.blg
@@ -55,6 +63,20 @@ research/writing/
 # Root scratch exports
 /*.html
 /*.pdf
+/*_decisions.csv
+/*_manifest.json
+/*_metrics_summary.csv
+/*_metrics_summary.json
+/*_pairwise_stats.csv
+/*_runtime.csv
+/cgpo_trace_summary.csv
+/component_dominance.csv
+/pairwise_stats.csv
+/win_tie_loss.csv
 /auto_research_prompt.md
 /prompt.md
+/plan.md
 /research_log.md
+
+# Local assistant/editor state
+/.claude/

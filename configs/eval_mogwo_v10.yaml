@@ -1,0 +1,15 @@
+algorithms: ["MOGWO", "CMOSMA"]
+allowExperimentalAlgorithms: true
+problems: ["c_100"]
+runs: 3
+generations: 40
+population: 40
+seed: 11
+output_dir: "results/eval_mogwo_v10"
+metrics: true
+max_turn_deg: 50.0
+fleet_size: 3
+separation_min: 50.0
+extra:
+  mogwoUseDiversityFeedback: true
+  mogwoUseStepLimiter: true

@@ -71,7 +71,7 @@ Component ablation runner template:
 
 ```bash
 python3 scripts/run_mogwo_component_ablation.py \
-  --protocol configs/mogwo_component_ablation.yaml \
+  --protocol configs/full_benchmark.yaml \
   --results-root results/mogwo_component_ablation
 ```
 

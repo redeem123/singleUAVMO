@@ -1,49 +1,35 @@
 # Template protocol for fair MOGWO component ablation.
 # This file is intentionally a template and does not launch runs by itself.
 
+allowExperimentalAlgorithms: true
 mode: multi
 scenarioSet: paper_medium
 generations: 500
 population: 100
 runs: 30
+computeMetrics: true
 safeDist: 20.0
 droneSize: 1.0
 separationMin: 10.0
 maxTurnDeg: 75.0
-fleetSizes: [1, 3, 5]
+fleetSizes: [1, 2, 3]
 seed: 11
 gpuMode: off
 
 extra:
   algorithms: ["MOGWO"]
-  problemNames: ["c_100_uav1", "m_100_uav1", "s_120_uav1", "c_100_uav3", "m_100_uav3", "s_120_uav3", "c_100_uav5", "m_100_uav5", "s_120_uav5"]
+  problemNames: ["c_100", "m_100", "s_120"]
   hardCollisionConstraint: true
   maxWorkers: 14
   nRep: 100
   resumeExistingRuns: false
 
-# Planned ablation cases (component-wise):
-# - full (A2-MOGWO):
-#     extra: {}  # mogwoVariant defaults to "full"
-# - no_diversity_feedback:
-#     extra:
-#       mogwoUseDiversityFeedback: false
-# - no_step_limiter:
-#     extra:
-#       mogwoUseStepLimiter: false
-# - no_feasibility_recomb:
-#     extra:
-#       mogwoUseFeasibilityRecomb: false
-# - no_attention_guard:
-#     extra:
-#       mogwoUseAttentionGuard: false
-# - no_attention:
-#     extra:
-#       mogwoVariant: "no_attention"
-#       mogwoUseStepLimiterNoAttention: false
-# - standard_gwo:
-#     extra:
-#       mogwoVariant: "no_attention"  # NOTE: currently identical to no_attention
-#     TODO: implement variant="standard_gwo" in _resolve_variant with plain
-#     mean-archive leader selection (no occupancy weighting) to create a true
-#     standard GWO baseline distinct from MOGWO-NO-ATTENTION.
+# Planned ablation cases (4-tier evaluation):
+# 1. Anchors
+# - full
+# - pure_gwo
+#
+# 2. Leave-one-out component checks
+# - loo_repair_restart
+# - loo_attention
+# - loo_archive_explorer

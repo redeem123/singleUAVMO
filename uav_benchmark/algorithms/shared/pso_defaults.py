@@ -1,4 +1,5 @@
 """Default hyperparameters for PSO-based fleet runners."""
+
 from __future__ import annotations
 
 # Core PSO defaults

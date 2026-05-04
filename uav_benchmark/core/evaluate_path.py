@@ -14,35 +14,106 @@ def _value(model: dict[str, Any], *keys: str, default: float = 0.0) -> float:
     return float(default)
 
 
+def _invalid_path_result() -> tuple[np.ndarray, dict[str, float]]:
+    infinite_cost = float("inf")
+    return (
+        np.full(4, infinite_cost, dtype=float),
+        {"collisionViolation": 1.0, "minClearance": float("-inf"), "maxTurnDeg": float("inf")},
+    )
+
+
+def _row_matrix(raw: Any) -> np.ndarray:
+    matrix = np.asarray(raw, dtype=float)
+    if matrix.ndim == 1:
+        return matrix.reshape(1, -1)
+    return matrix
+
+
+def _match_radii_to_centers(raw_radii: Any, count: int) -> np.ndarray:
+    radii = np.asarray(raw_radii, dtype=float).reshape(-1)
+    if radii.size == 1:
+        return np.repeat(radii, count)
+    if radii.size < count:
+        radii = np.pad(radii, (0, count - radii.size), mode="edge")
+    return radii[:count]
+
+
+def _collect_obstacles(model: dict[str, Any]) -> np.ndarray:
+    obstacles: list[np.ndarray] = []
+    if "threats" in model and model["threats"] is not None:
+        threat_array = np.asarray(model["threats"], dtype=float)
+        if threat_array.ndim == 2 and threat_array.shape[1] >= 4:
+            obstacles.append(threat_array[:, :4])
+    if "nofly_c" in model and model["nofly_c"] is not None and "nofly_r" in model and model["nofly_r"] is not None:
+        centers = _row_matrix(model["nofly_c"])
+        if centers.shape[1] >= 2:
+            centers = centers[:, :2]
+            radii = _match_radii_to_centers(model["nofly_r"], centers.shape[0])
+            obstacles.append(np.column_stack([centers[:, 0], centers[:, 1], np.zeros(centers.shape[0]), radii]))
+    if obstacles:
+        return np.vstack(obstacles)
+    return np.zeros((0, 4), dtype=float)
+
+
+def _turn_objective(path_xyz: np.ndarray, turn_limit_rad: float, spike_weight: float) -> tuple[float, float]:
+    if path_xyz.shape[0] < 3:
+        return 0.0, 0.0
+
+    xy = np.asarray(path_xyz[:, :2], dtype=float)
+    keep = np.ones(xy.shape[0], dtype=bool)
+    keep[1:] = np.linalg.norm(np.diff(xy, axis=0), axis=1) > 1e-9
+    xy = xy[keep]
+    if xy.shape[0] < 3:
+        return 0.0, 0.0
+
+    v1 = xy[1:-1] - xy[:-2]
+    v2 = xy[2:] - xy[1:-1]
+    n1 = np.linalg.norm(v1, axis=1)
+    n2 = np.linalg.norm(v2, axis=1)
+    valid = (n1 > 0) & (n2 > 0)
+    if not np.any(valid):
+        return 0.0, 0.0
+
+    cross_norms = np.abs(v1[valid, 0] * v2[valid, 1] - v1[valid, 1] * v2[valid, 0])
+    dots = np.sum(v1[valid] * v2[valid], axis=1)
+    angles = np.arctan2(cross_norms, dots)
+    all_angles = np.zeros(v1.shape[0], dtype=float)
+    all_angles[valid] = angles
+    abs_angles = np.abs(all_angles)
+    mean_turn = float(np.mean(abs_angles / math.pi))
+    max_turn = float(np.max(abs_angles))
+    excess = max(0.0, max_turn - turn_limit_rad)
+    spike_penalty = spike_weight * (excess / math.pi)
+    return mean_turn + spike_penalty, float(np.degrees(max_turn))
+
+
 @njit(fastmath=True)
 def _interpolate_path(path_xyz: np.ndarray, step_size: float) -> np.ndarray:
     """Interpolate path segments so no gap exceeds *step_size*."""
     n_pts = path_xyz.shape[0]
     if n_pts < 2:
         return path_xyz.copy()
-    
+
     n_seg = n_pts - 1
-    distances = np.empty(n_seg, dtype=np.float64)
     steps_per_seg = np.empty(n_seg, dtype=np.int64)
     total_points = 1
-    
+
     for i in range(n_seg):
-        dx = path_xyz[i+1, 0] - path_xyz[i, 0]
-        dy = path_xyz[i+1, 1] - path_xyz[i, 1]
-        dz = path_xyz[i+1, 2] - path_xyz[i, 2]
-        d = math.sqrt(dx*dx + dy*dy + dz*dz)
-        distances[i] = d
-        
-        steps = int(math.ceil(d / step_size))
+        dx = path_xyz[i + 1, 0] - path_xyz[i, 0]
+        dy = path_xyz[i + 1, 1] - path_xyz[i, 1]
+        dz = path_xyz[i + 1, 2] - path_xyz[i, 2]
+        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+        steps = int(math.ceil(distance / step_size))
         if steps < 1:
             steps = 1
         steps_per_seg[i] = steps
         total_points += steps
-        
+
     result = np.empty((total_points, 3), dtype=np.float64)
     result[0] = path_xyz[0]
     cursor = 1
-    
+
     for seg_idx in range(n_seg):
         n_steps = steps_per_seg[seg_idx]
         p0 = path_xyz[seg_idx]
@@ -53,7 +124,7 @@ def _interpolate_path(path_xyz: np.ndarray, step_size: float) -> np.ndarray:
             result[cursor, 1] = (1.0 - t) * p0[1] + t * p1[1]
             result[cursor, 2] = (1.0 - t) * p0[2] + t * p1[2]
             cursor += 1
-            
+
     return result[:cursor]
 
 
@@ -71,9 +142,7 @@ def _dist_point_to_segment_2d(point: np.ndarray, start_point: np.ndarray, end_po
 
 
 @njit(fastmath=True)
-def _dist_points_to_segments_2d(
-    centers: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray
-) -> np.ndarray:
+def _dist_points_to_segments_2d(centers: np.ndarray, seg_starts: np.ndarray, seg_ends: np.ndarray) -> np.ndarray:
     """Vectorised min-distance from multiple obstacle centres to multiple segments.
 
     Parameters
@@ -95,29 +164,29 @@ def _dist_points_to_segments_2d(
         sy0 = seg_starts[i, 1]
         sx1 = seg_ends[i, 0]
         sy1 = seg_ends[i, 1]
-        
+
         dx = sx1 - sx0
         dy = sy1 - sy0
         seg_len_sq = dx * dx + dy * dy
         if seg_len_sq < 1e-30:
             seg_len_sq = 1e-30
-            
+
         for j in range(n_obs):
             cx = centers[j, 0]
             cy = centers[j, 1]
-            
+
             p_dx = cx - sx0
             p_dy = cy - sy0
-            
+
             t = (p_dx * dx + p_dy * dy) / seg_len_sq
             if t < 0.0:
                 t = 0.0
             elif t > 1.0:
                 t = 1.0
-                
+
             proj_x = sx0 + t * dx
             proj_y = sy0 + t * dy
-            
+
             dist_x = cx - proj_x
             dist_y = cy - proj_y
             distances[i, j] = math.sqrt(dist_x * dist_x + dist_y * dist_y)
@@ -136,41 +205,37 @@ def _bilinear_interpolate(height_map: np.ndarray, x: np.ndarray, y: np.ndarray) 
     for i in range(n_pts):
         px = x[i]
         py = y[i]
-        
+
         x0 = int(np.floor(px))
         x1 = x0 + 1
         y0 = int(np.floor(py))
         y1 = y0 + 1
-        
+
         x0_c = min(max(x0, 0), w - 1)
         x1_c = min(max(x1, 0), w - 1)
         y0_c = min(max(y0, 0), h - 1)
         y1_c = min(max(y1, 0), h - 1)
-        
+
         wx1 = min(max(float(x1) - px, 0.0), 1.0)
         wx0 = 1.0 - wx1
         wy1 = min(max(float(y1) - py, 0.0), 1.0)
         wy0 = 1.0 - wy1
-        
+
         v00 = height_map[y0_c, x0_c]
         v10 = height_map[y1_c, x0_c]
         v01 = height_map[y0_c, x1_c]
         v11 = height_map[y1_c, x1_c]
-        
+
         out[i] = v00 * wx1 * wy1 + v10 * wx1 * wy0 + v01 * wx0 * wy1 + v11 * wx0 * wy0
-        
+
     return out
 
 
 def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[np.ndarray, dict[str, float]]:
     """Evaluate a UAV path and expose additional feasibility diagnostics."""
-    infinite_cost = float("inf")
     path_xyz = np.asarray(path_xyz, dtype=float)
     if path_xyz.ndim != 2 or path_xyz.shape[1] != 3 or path_xyz.shape[0] < 2:
-        return (
-            np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float),
-            {"collisionViolation": 1.0, "minClearance": float("-inf"), "maxTurnDeg": float("inf")},
-        )
+        return _invalid_path_result()
 
     x_coord = path_xyz[:, 0]
     y_coord = path_xyz[:, 1]
@@ -180,10 +245,7 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
     ymin = _value(model, "ymin")
     ymax = _value(model, "ymax")
     if np.any(x_coord < xmin) or np.any(x_coord > xmax) or np.any(y_coord < ymin) or np.any(y_coord > ymax):
-        return (
-            np.array([infinite_cost, infinite_cost, infinite_cost, infinite_cost], dtype=float),
-            {"collisionViolation": 1.0, "minClearance": float("-inf"), "maxTurnDeg": float("inf")},
-        )
+        return _invalid_path_result()
 
     height_map = np.asarray(model["H"], dtype=float)
     # Use 0-based coordinates for bilinear lookup (MATLAB/Legacy uses 1-based indices)
@@ -200,6 +262,7 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
 
     segment_vectors = np.diff(path_xyz, axis=0)
     segment_lengths = np.linalg.norm(segment_vectors, axis=1)
+    infinite_cost = float("inf")
     if np.any(segment_lengths <= min_segment_length):
         first_objective = infinite_cost
     else:
@@ -211,25 +274,7 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
             first_objective = 1.0 - straight / total_length
 
     # ── Build obstacle matrix ──────────────────────────────────────
-    obstacles: list[np.ndarray] = []
-    if "threats" in model and model["threats"] is not None:
-        threat_array = np.asarray(model["threats"], dtype=float)
-        if threat_array.ndim == 2 and threat_array.shape[1] >= 4:
-            obstacles.append(threat_array[:, :4])
-    if "nofly_c" in model and model["nofly_c"] is not None and "nofly_r" in model and model["nofly_r"] is not None:
-        centers = np.asarray(model["nofly_c"], dtype=float)
-        if centers.ndim == 1:
-            centers = centers.reshape(1, -1)
-        if centers.shape[1] >= 2:
-            centers = centers[:, :2]
-            radii = np.asarray(model["nofly_r"], dtype=float).reshape(-1)
-            if radii.size == 1:
-                radii = np.repeat(radii, centers.shape[0])
-            elif radii.size < centers.shape[0]:
-                radii = np.pad(radii, (0, centers.shape[0] - radii.size), mode="edge")
-            nofly = np.column_stack([centers[:, 0], centers[:, 1], np.zeros(centers.shape[0]), radii[: centers.shape[0]]])
-            obstacles.append(nofly)
-    obstacle_matrix = np.vstack(obstacles) if obstacles else np.zeros((0, 4), dtype=float)
+    obstacle_matrix = _collect_obstacles(model)
 
     drone_size = _value(model, "droneSize", "drone_size", default=1.0)
     safe_dist = _value(model, "safeDist", "safe_dist", default=10.0)
@@ -293,49 +338,26 @@ def evaluate_path_details(path_xyz: np.ndarray, model: dict[str, Any]) -> tuple[
     zmax_val = _value(model, "zmax")
     zmin_val = _value(model, "zmin")
     if zmax_val <= zmin_val:
-        third_objective = infinite_cost
+        third_objective = float("inf")
     else:
         mean_altitude = (zmax_val + zmin_val) / 2.0
         bounds_tol = 1e-6
         out_of_bounds = (z_relative < zmin_val - bounds_tol) | (z_relative > zmax_val + bounds_tol)
         if np.any(out_of_bounds):
-            third_objective = infinite_cost
+            third_objective = float("inf")
         else:
             altitude_penalties = 2.0 * np.abs(z_relative - mean_altitude) / (zmax_val - zmin_val)
             third_objective = float(np.mean(altitude_penalties))
 
-    # ── Objective 4: turning angle (vectorised) ──────────────────
-    # Soft-penalize sharp spikes so a few near-90° turns cannot hide
-    # behind many small turns.
+    # ── Objective 4: horizontal turning angle (vectorised) ───────
+    # The benchmark constrains heading changes in the x-y plane; vertical
+    # motion is already penalized through clearance and altitude objectives.
+    # Using full 3D bend angles over-penalizes terrain-following paths and
+    # can reject otherwise valid fleet trajectories.
     turn_limit_deg = _value(model, "maxTurnDeg", "maxTurnAngleDeg", default=75.0)
     turn_limit_rad = _value(model, "maxTurnRad", "maxTurnAngleRad", default=math.radians(turn_limit_deg))
     spike_weight = max(0.0, _value(model, "turnSpikePenaltyWeight", "j4SpikePenaltyWeight", default=1.0))
-    if path_xyz.shape[0] < 3:
-        fourth_objective = 0.0
-        max_turn_deg = 0.0
-    else:
-        v1 = path_xyz[1:-1] - path_xyz[:-2]  # (N-2, 3)
-        v2 = path_xyz[2:] - path_xyz[1:-1]   # (N-2, 3)
-        n1 = np.linalg.norm(v1, axis=1)
-        n2 = np.linalg.norm(v2, axis=1)
-        valid = (n1 > 0) & (n2 > 0)
-        if not np.any(valid):
-            fourth_objective = 0.0
-            max_turn_deg = 0.0
-        else:
-            cross_norms = np.linalg.norm(np.cross(v1[valid], v2[valid]), axis=1)
-            dots = np.sum(v1[valid] * v2[valid], axis=1)
-            angles = np.arctan2(cross_norms, dots)
-            # Include zero angles for degenerate segments
-            all_angles = np.zeros(v1.shape[0], dtype=float)
-            all_angles[valid] = angles
-            abs_angles = np.abs(all_angles)
-            mean_turn = float(np.mean(abs_angles / math.pi))
-            max_turn = float(np.max(abs_angles))
-            excess = max(0.0, max_turn - turn_limit_rad)
-            spike_penalty = spike_weight * (excess / math.pi)
-            fourth_objective = mean_turn + spike_penalty
-            max_turn_deg = float(np.degrees(max_turn))
+    fourth_objective, max_turn_deg = _turn_objective(path_xyz, turn_limit_rad, spike_weight)
 
     objective = np.array([first_objective, second_objective, third_objective, fourth_objective], dtype=float)
     if np.all(np.isfinite(objective)):

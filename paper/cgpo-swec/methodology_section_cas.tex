@@ -1,0 +1,47 @@
+% Elsevier CAS-DC-compatible methodology section for the CGPO preview.
+% This version uses a discussion-oriented voice while avoiding result claims.
+
+\section{Methodology}
+\label{sec:methodology}
+
+The main design issue in constrained multi-UAV path planning is that selection pressure and fleet coordination are often treated as separate operations. Raising a waypoint to improve terrain clearance can change turn geometry; moving one UAV away from another can lengthen a path or push it toward a new terrain boundary. CGPO is built around this observation. The optimizer first describes the active constraint state of a candidate fleet path and then lets that description guide the rest of the evolutionary search. The resulting method has three linked parts: constraint-interaction graph construction (CIG), Pareto pressure-field selection (PPF), and orchestrated variation (OVO). The active repository implementation contains no explicit repair stack, no graph-guided feasibility projection module, no constructive route-prior baseline, and no matched CGPO hybrid algorithms.
+
+\subsection{Candidate representation and feasibility signals}
+\label{subsec:candidate-representation}
+
+A candidate solution is a fleet path set
+\[
+X=\{P_1,\ldots,P_m\}, \qquad
+P_u=(x_{u,i},y_{u,i},z_{u,i})_{i=1}^{n},
+\]
+where $m$ is the fleet size and each route has fixed start and goal endpoints. CGPO modifies only internal waypoints, which keeps the search focused on route shape and fleet interaction instead of changing the mission definition. Candidate quality is evaluated by the repository's four-objective mission evaluator, and feasibility is checked through hard terrain, altitude, turn-angle, and pairwise-separation constraints.
+
+This representation is deliberately conservative. It gives CGPO enough freedom to reshape paths, but it keeps all methods in the comparison tied to the same evaluator, endpoints, fleet sizes, and feasibility rules. For the same reason, the method records feasible ratio, conflict rate, minimum clearance, maximum turn angle, makespan, energy, and runtime in addition to hypervolume and IGD+. These diagnostics are important because a high objective score is not a useful path-planning result if it is produced by unsafe or kinematically invalid routes.
+
+\subsection{Constraint-interaction graph}
+\label{subsec:cig}
+
+The CIG is the mechanism that makes CGPO inspectable. For each candidate fleet path, internal waypoints are treated as graph nodes with three-dimensional tension vectors. Terrain and altitude edges add vertical pressure when a waypoint approaches or violates the safe clearance envelope. Turn edges add horizontal pressure when a waypoint creates excessive heading change relative to the maximum turn angle. Pairwise edges connect nearby UAV waypoints within a temporal window and add separation pressure when two routes approach the required safety distance. Smoothing edges add a small local path-quality pressure; they are not objective-gradient edges.
+
+The graph therefore plays two roles. Operationally, it tells the optimizer where rule-based constraint pressure is concentrated. Analytically, it provides trace variables that can later be compared with external performance. Scalar tension, per-UAV tension, mean and maximum tension, terrain-edge count, turn-edge count, pairwise-edge count, smoothing-edge count, conflict-cluster count, and active constraint types are all retained. If a later ablation removes CIG edge coupling, the expected effect should appear both in these internal signals and in the external quality or safety metrics.
+
+\subsection{Pareto pressure field}
+\label{subsec:ppf}
+
+PPF addresses a different pressure in constrained multi-objective search: useful candidates are not always fully feasible. A candidate near the boundary may expose a route shape that can generate a high-quality feasible offspring, while a feasible candidate with poor diversity may contribute little to the Pareto set. CGPO therefore does not rank candidates with constraint violation alone. PPF combines non-dominated sorting rank, constraint violation, crowding-distance diversity, boundary usefulness, and CIG tension.
+
+The practical effect is that feasible candidates, useful near-boundary candidates, diverse infeasible candidates, and suppressed candidates are separated before parent selection. The pressure field outputs parent-selection probability, feasibility pressure, exploration scale, objective weights, boundary mass, feasible mass, pressure entropy, and stratum counts. These values give the method a more transparent selection policy: if CGPO benefits from boundary exploration, the benefit should be visible in the PPF traces; if it does not, the no-PPF ablation should expose that weakness.
+
+\subsection{Orchestrated variation operator}
+\label{subsec:ovo}
+
+OVO is where the multi-UAV character of the problem enters the variation step directly. Standard crossover and mutation can create useful route diversity, but in fleet planning they can also produce synchronized conflicts between otherwise reasonable single-UAV paths. OVO therefore blends parent waypoints with inverse-tension weights, so that highly strained regions are not copied blindly from one parent. Internal waypoints with stronger pressure receive perturbations scaled by the PPF exploration output.
+
+For fleet cases, OVO also performs a waypoint-aligned coordination pass. Nearby UAV waypoints at the same temporal index are shifted apart whenever they violate the pairwise separation requirement, which complements the pairwise edges already present in the CIG. The earlier implementation resampled every offspring path to a high-resolution synchronisation grid before scanning; the redesign drops that resample because the same conflict signal is already encoded by the graph. The operator reports perturbation scale, perturbed waypoint count, coordinated cluster count, and parent-blend entropy. These quantities are not presented as proof by themselves; they are meant to explain whether the fleet-coordination mechanism is active when the external ablation results are interpreted.
+
+\subsection{Search loop and ablation hooks}
+\label{subsec:cgpo-loop}
+
+Putting these mechanisms together, CGPO follows a repeated discussion between population state and constraint state. The initial population is uniformly random subject to the domain bounds: no constructive A$^\star$ corridor seeds, no analytic ramp seeds, no bias toward any reference trajectory. Every candidate is evaluated with the same four-objective mission evaluator used for the baselines, so the published comparison is evaluation-honest. At each generation, the optimizer builds one CIG per pool member, computes the PPF, samples parent pairs from the resulting parent-selection probabilities, applies OVO, projects offspring back into the domain bounds, evaluates the resulting candidates, and updates the feasible elite archive using NSGA-II constraint-domination semantics. The final population is saved using the common benchmark artifact format so that CGPO and non-CGPO baselines share the same metrics pipeline.
+
+The ablation design follows the same boundaries. The full method is compared with variants that disable CIG edge coupling, PPF pressure, OVO variation, and the OVO fleet-coordination push individually, plus a \texttt{random\_only} baseline that disables all three mechanisms simultaneously. This is the entire paper-grade ablation: a component is treated as supported only when its removal causes a meaningful external degradation or a trace change that explains the observed behavior. If a component remains active internally but does not improve quality, safety, or runtime trade-offs, the discussion treats it as a simplification target rather than as an essential part of CGPO.

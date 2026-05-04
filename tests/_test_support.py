@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 
 def install_numba_stub() -> None:

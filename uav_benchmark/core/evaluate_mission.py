@@ -85,12 +85,12 @@ def evaluate_mission_details(
     # Synchronize by normalized progress to evaluate pairwise separation.
     n_samples = int(max(20, max(path.shape[0] for path in paths_xyz) * 4))
     synced = np.stack([_resample_path(np.asarray(path, dtype=float), n_samples) for path in paths_xyz], axis=0)
-    
+
     fleet_size, n_samples, _ = synced.shape
     violation_sum = 0.0
     min_sep = np.inf
     conflict_rows: list[list[float]] = []
-    
+
     for step in range(n_samples):
         points = synced[:, step, :]
         if fleet_size < 2:
@@ -114,7 +114,9 @@ def evaluate_mission_details(
     if path_obj_mat.size > 0:
         aggregated = np.mean(path_obj_mat, axis=0)
         if np.any(~np.isfinite(aggregated)):
-            fallback = np.nanmax(path_obj_mat[np.isfinite(path_obj_mat)]) if np.any(np.isfinite(path_obj_mat)) else 1_000.0
+            fallback = (
+                np.nanmax(path_obj_mat[np.isfinite(path_obj_mat)]) if np.any(np.isfinite(path_obj_mat)) else 1_000.0
+            )
             aggregated = np.where(np.isfinite(aggregated), aggregated, float(fallback) * 5.0)
         aggregated = np.asarray(aggregated, dtype=float)
         aggregated[1] = float(aggregated[1] + separation_weight * conflict_rate)
@@ -146,7 +148,9 @@ def evaluate_mission_details(
         "separationViolation": float(separation_violation),
         "collisionViolation": float(collision_violation),
         "minClearance": float(min_clearance if np.isfinite(min_clearance) else np.nan),
-        "conflictLog": np.asarray(conflict_rows, dtype=float).reshape(-1, 5) if conflict_rows else np.zeros((0, 5), dtype=float),
+        "conflictLog": np.asarray(conflict_rows, dtype=float).reshape(-1, 5)
+        if conflict_rows
+        else np.zeros((0, 5), dtype=float),
         "pathObjectives": path_obj_mat,
     }
     return obj, details

@@ -1,14 +1,15 @@
-"""APEX-SHADE: Adaptive Pareto-Elite X-SHADE for Fleet Path Planning.
+"""L-SHADE-CDP baseline for fleet path planning.
 
-Key innovations over baseline algorithms:
-  1. L-SHADE adaptive parameter control (history-based F/CR via Lehmer mean)
-  2. Constraint-Domination Principle (CDP) — proper hard constraint satisfaction
-  3. Opposition-Based Learning (OBL) initialization for 2x better diversity
-  4. Vectorized DE/current-to-pbest/1 mutation with external historical archive
-  5. R2-indicator archive for spread-aware Pareto front maintenance
-  6. Gaussian elite local search around top archive members
-  7. Linear population reduction (L-SHADE) to focus budget on refinement
+This module still exposes shared DE helper utilities used by the more
+engineered algorithms in the repository, but the benchmark-facing runner is
+intentionally kept simple:
+  1. L-SHADE success-history adaptation for F/CR
+  2. DE/current-to-pbest/1 mutation with the standard external donor archive
+  3. Binomial crossover
+  4. Constraint-Domination Principle (CDP) for survival and archive ranking
+  5. Linear population reduction
 """
+
 from __future__ import annotations
 
 import time
@@ -16,45 +17,44 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.shared.fleet_runner import (
     _build_bounds,
     _constraint_violation,
     _constraint_violation_vector,
+    _ensure_fleet_endpoints,
     _evaluate_population,
     _resolve_run_indices,
     _resume_run_scores,
     _save_fleet_artifacts,
     _should_write_final_hv,
-    _ensure_fleet_endpoints,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
 from uav_benchmark.algorithms.shared.pso_types import Candidate
+from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
-from uav_benchmark.core.nsga2_ops import n_d_sort, crowding_distance
-from uav_benchmark.core.nsga3_ops import uniform_point
-from uav_benchmark.core.r2_archive import r2_archive_update, uniform_weight_vectors
+from uav_benchmark.core.nsga2_ops import crowding_distance, n_d_sort
+from uav_benchmark.core.r2_archive import r2_archive_update
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
 
 # ────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ────────────────────────────────────────────────────────────────────
-_H = 10          # L-SHADE history size
-_P_BEST = 0.11   # fraction for current-to-pbest mutation
-_ARC_RATIO = 2.6 # external DE archive size ratio (relative to n_init)
+_H = 10  # L-SHADE history size
+_P_BEST = 0.11  # fraction for current-to-pbest mutation
+_ARC_RATIO = 2.6  # external DE archive size ratio (relative to n_init)
 
 
 # ────────────────────────────────────────────────────────────────────
 # CDP Selection: Constraint-Domination Principle
 # ────────────────────────────────────────────────────────────────────
 
+
 def _cdp_sort_indices(obj: np.ndarray, cv: np.ndarray) -> np.ndarray:
     """Sort population indices by CDP: feasible first (by NSGA-rank + crowding),
     then infeasible sorted by constraint violation ascending."""
     feas_mask = cv <= 0.0
-    feas_idx  = np.where( feas_mask)[0]
+    feas_idx = np.where(feas_mask)[0]
     infeas_idx = np.where(~feas_mask)[0]
 
     # Sort infeasible by violation ascending
@@ -87,7 +87,7 @@ def _cdp_wins(t_cv: float, p_cv: float, t_obj: np.ndarray, p_obj: np.ndarray) ->
         # Pareto dominance (trial must dominate)
         return bool(np.all(t_obj <= p_obj) and np.any(t_obj < p_obj))
     if t_feas and not p_feas:
-        return True   # feasible beats infeasible always
+        return True  # feasible beats infeasible always
     if p_feas and not t_feas:
         return False  # infeasible never beats feasible
     return t_cv < p_cv  # both infeasible: less violation wins
@@ -97,12 +97,13 @@ def _cdp_wins(t_cv: float, p_cv: float, t_obj: np.ndarray, p_obj: np.ndarray) ->
 # SHADE Parameter Adaptation (Success-History based)
 # ────────────────────────────────────────────────────────────────────
 
+
 class SHADEMemory:
     """History memory for adaptive F and CR with Lehmer mean update."""
 
     def __init__(self, H: int = _H) -> None:
         self.H = H
-        self.M_F  = np.full(H, 0.5)
+        self.M_F = np.full(H, 0.5)
         self.M_CR = np.full(H, 0.5)
         self._k = 0
 
@@ -125,14 +126,13 @@ class SHADEMemory:
         CR = np.nan_to_num(CR, nan=0.5, posinf=1.0, neginf=0.0)
         return F, CR
 
-    def update(self, S_F: list[float], S_CR: list[float],
-               S_delta: list[float]) -> None:
+    def update(self, S_F: list[float], S_CR: list[float], S_delta: list[float]) -> None:
         """Update with successful parameters, weighted by improvement magnitude."""
         if not S_F:
             return
-        Fa  = np.array(S_F,     dtype=float)
-        CRa = np.array(S_CR,    dtype=float)
-        da  = np.array(S_delta, dtype=float)
+        Fa = np.array(S_F, dtype=float)
+        CRa = np.array(S_CR, dtype=float)
+        da = np.array(S_delta, dtype=float)
         valid = np.isfinite(Fa) & np.isfinite(CRa) & np.isfinite(da) & (da > 0.0)
         if not np.any(valid):
             return
@@ -142,17 +142,22 @@ class SHADEMemory:
         total = float(da.sum())
         if not np.isfinite(total) or total <= 0.0:
             return
-        w   = da / (total + 1e-12)
-        self.M_F[self._k]  = float((w * Fa**2).sum() / ((w * Fa).sum() + 1e-12))
+        w = da / (total + 1e-12)
+        self.M_F[self._k] = float((w * Fa**2).sum() / ((w * Fa).sum() + 1e-12))
         self.M_CR[self._k] = float((w * CRa).sum())
-        self.M_F[self._k] = float(np.clip(np.nan_to_num(self.M_F[self._k], nan=0.5, posinf=1.0, neginf=1e-4), 1e-4, 1.0))
-        self.M_CR[self._k] = float(np.clip(np.nan_to_num(self.M_CR[self._k], nan=0.5, posinf=1.0, neginf=0.0), 0.0, 1.0))
+        self.M_F[self._k] = float(
+            np.clip(np.nan_to_num(self.M_F[self._k], nan=0.5, posinf=1.0, neginf=1e-4), 1e-4, 1.0)
+        )
+        self.M_CR[self._k] = float(
+            np.clip(np.nan_to_num(self.M_CR[self._k], nan=0.5, posinf=1.0, neginf=0.0), 0.0, 1.0)
+        )
         self._k = (self._k + 1) % self.H
 
 
 # ────────────────────────────────────────────────────────────────────
 # Vectorised DE/current-to-pbest/1 mutation
 # ────────────────────────────────────────────────────────────────────
+
 
 def _de_mutation_vectorised(
     pop: np.ndarray,
@@ -188,7 +193,7 @@ def _de_mutation_vectorised(
 
     # Fix collisions with parent index (for first n elements)
     parent_idx = np.arange(n)
-    for it in range(3):  # 3 attempts to avoid trivial collisions
+    for _it in range(3):  # 3 attempts to avoid trivial collisions
         bad1 = (r1 == parent_idx) | (r1 == pb_idx)
         bad2 = (r2 == parent_idx) | (r2 == r1) | (r2 == pb_idx)
         if np.any(bad1):
@@ -219,6 +224,7 @@ def _binomial_crossover(
 # R2 Pareto Archive Update
 # ────────────────────────────────────────────────────────────────────
 
+
 def _update_pareto_archive(
     archive: list[Candidate],
     new_cands: list[Candidate],
@@ -245,14 +251,14 @@ def _update_pareto_archive(
         return combined[:max_size], z_ideal.copy()
 
     obj_all = np.stack([c.objective for c in all_cands])
-    vec_all = np.stack([c.vector   for c in all_cands])
-    n_arch  = len(archive)
+    vec_all = np.stack([c.vector for c in all_cands])
+    n_arch = len(archive)
 
     new_obj, new_vec, z_out = r2_archive_update(
-        archive_obj      = obj_all[:n_arch] if archive else np.zeros((0, obj_all.shape[1])),
-        archive_vectors  = vec_all[:n_arch] if archive else np.zeros((0, vec_all.shape[1])),
-        candidate_obj    = obj_all[n_arch:],
-        candidate_vectors= vec_all[n_arch:],
+        archive_obj=obj_all[:n_arch] if archive else np.zeros((0, obj_all.shape[1])),
+        archive_vectors=vec_all[:n_arch] if archive else np.zeros((0, vec_all.shape[1])),
+        candidate_obj=obj_all[n_arch:],
+        candidate_vectors=vec_all[n_arch:],
         max_size=max_size,
         weights=r2_weights,
         z_ideal=z_ideal,
@@ -265,19 +271,24 @@ def _update_pareto_archive(
         matched = False
         for j, c in enumerate(all_cands):
             if j not in used and np.allclose(c.vector, new_vec[i], atol=1e-10):
-                kept.append(c); used.add(j); matched = True; break
+                kept.append(c)
+                used.add(j)
+                matched = True
+                break
         if not matched:
             dists = np.linalg.norm(vec_all - new_vec[i], axis=1)
             for j_used in used:
                 dists[j_used] = np.inf
             best = int(np.argmin(dists))
-            kept.append(all_cands[best]); used.add(best)
+            kept.append(all_cands[best])
+            used.add(best)
     return kept, z_out
 
 
 # ────────────────────────────────────────────────────────────────────
 # Opposition-Based Learning
 # ────────────────────────────────────────────────────────────────────
+
 
 def _obl_population(pop: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     """Generate opposite population: x_obl = lb + ub - x, clipped."""
@@ -287,6 +298,7 @@ def _obl_population(pop: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np
 # ────────────────────────────────────────────────────────────────────
 # Gaussian Elite Local Search
 # ────────────────────────────────────────────────────────────────────
+
 
 def _elite_local_search(
     archive: list[Candidate],
@@ -316,25 +328,63 @@ def _elite_local_search(
 # L-SHADE: Linear Population Reduction
 # ────────────────────────────────────────────────────────────────────
 
+
 def _lshade_n(gen: int, max_gen: int, n_init: int, n_min: int) -> int:
     return max(n_min, int(round(n_init + (n_min - n_init) * gen / max_gen)))
+
+
+def _update_cdp_archive(
+    archive: list[Candidate],
+    new_cands: list[Candidate],
+    max_size: int,
+    model: dict[str, Any],
+) -> list[Candidate]:
+    """Keep a plain CDP-ranked archive without indicator-based pruning."""
+    if max_size <= 0:
+        return []
+    combined = list(archive) + list(new_cands)
+    if not combined:
+        return []
+
+    unique: list[Candidate] = []
+    seen: set[bytes] = set()
+    for candidate in combined:
+        vector = np.asarray(candidate.vector, dtype=float)
+        key = np.round(vector, decimals=12).tobytes()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+
+    feasible = [
+        candidate
+        for candidate in unique
+        if float(candidate.details.get("feasible", 0.0)) > 0.5
+        and np.all(np.isfinite(np.asarray(candidate.objective, dtype=float)))
+    ]
+    source = feasible if feasible else unique
+    obj = _candidate_matrix(source)
+    cv = _constraint_violation_vector(source, model)
+    keep = _cdp_sort_indices(obj, cv)[:max_size]
+    return [source[int(idx)] for idx in keep]
 
 
 # ────────────────────────────────────────────────────────────────────
 # Main Runner
 # ────────────────────────────────────────────────────────────────────
 
-def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
-    """APEX-SHADE fleet runner.
 
-    Dominant multi-objective constrained DE-based optimizer combining:
-    L-SHADE + CDP + OBL + R2-archive + elite local search.
+def run_fleet_lshade_cdp(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
+    """L-SHADE-CDP fleet runner.
+
+    Strong constrained multi-objective baseline:
+    L-SHADE + DE/current-to-pbest/1 + binomial crossover + CDP.
     """
     objective_count = 4
     model = dict(model)
-    n_waypoints     = int(model.get("n", 10))
+    n_waypoints = int(model.get("n", 10))
     requested_fleet = max(1, int(params.fleet_size or model.get("fleetSize", 1)))
-    seed_value      = int(params.seed) if params.seed is not None else 0
+    seed_value = int(params.seed) if params.seed is not None else 0
 
     model, fleet_size = _ensure_fleet_endpoints(
         model=model,
@@ -342,41 +392,36 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
         seed=seed_value + requested_fleet,
         separation_min=float(params.separation_min),
     )
-    model["maxTurnDeg"]              = float(params.max_turn_deg)
-    model["is_rl"]                   = False   # use hard-constraint evaluation
+    model["maxTurnDeg"] = float(params.max_turn_deg)
+    model["is_rl"] = False  # use hard-constraint evaluation
     model["hardCollisionConstraint"] = True
 
     lower, upper = _build_bounds(model, fleet_size=fleet_size, n_waypoints=n_waypoints)
     dim = lower.size
 
     # Hyperparameters
-    n_init   = max(8, int(params.population))
-    n_min    = max(4, min(n_init // 4, 16))
-    max_gen  = int(params.generations)
-    arc_size = int(params.extra.get("nRep", n_init))
+    n_init = max(8, int(params.population))
+    n_min = max(4, min(n_init // 4, 16))
+    max_gen = int(params.generations)
+    archive_size = int(params.extra.get("nRep", n_init))
     metric_interval = int(params.extra.get("metricInterval", 20))
     ext_arc_cap = int(n_init * _ARC_RATIO)
 
-    # NSGA-III reference points & R2 weights
-    ref_points, _ = uniform_point(max(n_init, 60), objective_count)
-    r2_weights    = uniform_weight_vectors(n_obj=objective_count, n_divisions=15)
-    z_ideal_global = np.full(objective_count, np.inf)
-
     results_path = params.results_dir / params.problem_name
     ensure_dir(results_path)
-    run_scores = (np.zeros((params.runs, 2), dtype=float)
-                  if params.compute_metrics else np.zeros((0, 2), dtype=float))
+    run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
-    run_indices          = _resolve_run_indices(params)
+    run_indices = _resolve_run_indices(params)
     resume_existing_runs = bool(params.extra.get("resumeExistingRuns", True))
 
     for run_idx in run_indices:
         run_start = time.perf_counter()
-        run_dir   = results_path / f"Run_{run_idx}"
+        run_dir = results_path / f"Run_{run_idx}"
 
         if resume_existing_runs:
             resumed = _resume_run_scores(
-                run_dir=run_dir, problem_index=params.problem_index,
+                run_dir=run_dir,
+                problem_index=params.problem_index,
                 objective_count=objective_count,
                 compute_metrics=params.compute_metrics,
             )
@@ -385,64 +430,21 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
                     run_scores[run_idx - 1] = resumed
                 continue
 
-        # ── Budget tracking ───────────────────────────────────────────
-        # Total budget = population × (generations + 1): one initial eval +
-        # one eval per generation × population.  OBL evaluates 2×n which counts
-        # against budget; elite local-search offspring count as well.
-        _total_budget = n_init * (max_gen + 1)
-        _evals_used = 0
-
-        def _bounded_eval(matrix: np.ndarray, remaining: int) -> list[Candidate]:
-            if remaining <= 0 or matrix.shape[0] == 0:
-                return []
-            return _evaluate_population(matrix[:remaining], model, fleet_size, n_waypoints)
-
-        # ── OBL Initialisation ────────────────────────────────────────
-        n   = n_init
+        n = n_init
         pop = np.random.uniform(lower, upper, size=(n, dim))
-        obl = _obl_population(pop, lower, upper)
-        init_pool = np.vstack([pop, obl])   # 2n candidates
-
-        init_cands  = _bounded_eval(init_pool, _total_budget - _evals_used)
-        _evals_used += len(init_cands)
-        # Pad with fallback entries if budget was exhausted before evaluating all
-        while len(init_cands) < init_pool.shape[0]:
-            init_cands.append(Candidate(
-                vector=init_pool[len(init_cands)],
-                objective=np.full(4, np.inf, dtype=float),
-                details={"feasible": 0.0},
-            ))
-        init_obj    = _candidate_matrix(init_cands)
-        init_cv     = _constraint_violation_vector(init_cands, model)
-
-        # Keep best n by CDP ranking
-        best_n = _cdp_sort_indices(init_obj, init_cv)[:n]
-        pop        = init_pool[best_n]
-        candidates = [init_cands[i] for i in best_n]
-        obj        = init_obj[best_n]
-        cv         = init_cv[best_n]
+        candidates = _evaluate_population(pop, model, fleet_size, n_waypoints)
+        obj = _candidate_matrix(candidates)
+        cv = _constraint_violation_vector(candidates, model)
 
         # ── State ─────────────────────────────────────────────────────
-        shade   = SHADEMemory(H=_H)
+        shade = SHADEMemory(H=_H)
         ext_arc = np.zeros((0, dim))
-        archive: list[Candidate] = []
-        z_ideal = z_ideal_global.copy()
+        archive = _update_cdp_archive([], candidates, archive_size, model)
 
-        # Seed Pareto archive with initial feasible solutions
-        init_feasible = [c for c in candidates if float(c.details.get("feasible", 0.0)) > 0.5]
-        if init_feasible:
-            archive, z_ideal = _update_pareto_archive(
-                [], init_feasible, arc_size, r2_weights, z_ideal, model
-            )
-
-        hv_hist = (np.zeros((max_gen, 2), dtype=float)
-                   if params.compute_metrics else np.zeros((0, 2), dtype=float))
+        hv_hist = np.zeros((max_gen, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
         # ── Generation Loop ───────────────────────────────────────────
         for gen in range(1, max_gen + 1):
-            if _evals_used >= _total_budget:
-                break
-
             n_new = _lshade_n(gen, max_gen, n_init, n_min)
 
             # Sample adaptive F, CR
@@ -451,62 +453,47 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
             # Mutation + crossover
             mutants = _de_mutation_vectorised(pop, obj, cv, ext_arc, F, _P_BEST)
             mutants = np.clip(mutants, lower, upper)
-            trials  = _binomial_crossover(pop, mutants, CR)
-
-            # Elite local search injection (adaptive rate)
-            n_elite = max(0, int(n * 0.06))
-            if n_elite > 0 and archive:
-                sigma_ls = max(0.02, 0.12 * (1.0 - gen / max_gen))
-                ls_vecs  = _elite_local_search(archive, lower, upper, n_elite, sigma_ls)
-                if ls_vecs.shape[0] > 0:
-                    trials = np.vstack([trials, ls_vecs])
-
-            # Evaluate — capped to remaining budget
-            remaining = _total_budget - _evals_used
-            trial_cands = _bounded_eval(trials, remaining)
-            _evals_used += len(trial_cands)
-            # Pad infeasible entries for any trials that exceeded budget
-            while len(trial_cands) < trials.shape[0]:
-                trial_cands.append(Candidate(
-                    vector=trials[len(trial_cands)],
-                    objective=np.full(4, np.inf, dtype=float),
-                    details={"feasible": 0.0},
-                ))
-            trial_obj   = _candidate_matrix(trial_cands)
-            trial_cv    = _constraint_violation_vector(trial_cands, model)
+            trials = _binomial_crossover(pop, mutants, CR)
+            trial_cands = _evaluate_population(trials, model, fleet_size, n_waypoints)
+            trial_obj = _candidate_matrix(trial_cands)
+            trial_cv = _constraint_violation_vector(trial_cands, model)
 
             # ── CDP Selection + SHADE record ──────────────────────────
             S_F: list[float] = []
             S_CR: list[float] = []
             S_delta: list[float] = []
 
-            new_pop  = pop.copy()
-            new_obj  = obj.copy()
-            new_cv   = cv.copy()
+            new_pop = pop.copy()
+            new_obj = obj.copy()
+            new_cv = cv.copy()
             new_cands = list(candidates)
 
             for i in range(n):
                 if _cdp_wins(float(trial_cv[i]), float(cv[i]), trial_obj[i], obj[i]):
                     # Save loser to external archive
                     if ext_arc.shape[0] < ext_arc_cap:
-                        ext_arc = np.vstack([ext_arc, pop[i:i+1]])
+                        ext_arc = np.vstack([ext_arc, pop[i : i + 1]])
                     else:
                         ext_arc[np.random.randint(ext_arc_cap)] = pop[i]
                     # Accept trial
-                    new_pop[i]   = trials[i]
-                    new_obj[i]   = trial_obj[i]
-                    new_cv[i]    = float(trial_cv[i])
+                    new_pop[i] = trials[i]
+                    new_obj[i] = trial_obj[i]
+                    new_cv[i] = float(trial_cv[i])
                     new_cands[i] = trial_cands[i]
                     # Record success
-                    diff = np.nan_to_num(obj[i] - trial_obj[i], nan=0.0, posinf=0.0, neginf=0.0)
+                    incumbent_obj = np.asarray(obj[i], dtype=float)
+                    accepted_obj = np.asarray(trial_obj[i], dtype=float)
+                    finite_pair = np.isfinite(incumbent_obj) & np.isfinite(accepted_obj)
+                    diff = np.zeros_like(incumbent_obj, dtype=float)
+                    diff[finite_pair] = incumbent_obj[finite_pair] - accepted_obj[finite_pair]
                     improvement = float(np.sum(np.maximum(0.0, diff)))
                     S_F.append(float(F[i]))
                     S_CR.append(float(CR[i]))
                     S_delta.append(improvement + 1e-12)
 
-            pop       = new_pop
-            obj       = new_obj
-            cv        = new_cv
+            pop = new_pop
+            obj = new_obj
+            cv = new_cv
             candidates = new_cands
 
             shade.update(S_F, S_CR, S_delta)
@@ -514,65 +501,65 @@ def run_fleet_apex_shade(model: dict[str, Any], params: BenchmarkParams) -> np.n
             # ── L-SHADE population reduction ──────────────────────────
             if n_new < n:
                 keep = _cdp_sort_indices(obj, cv)[:n_new]
-                pop        = pop[keep]
-                obj        = obj[keep]
-                cv         = cv[keep]
+                pop = pop[keep]
+                obj = obj[keep]
+                cv = cv[keep]
                 candidates = [candidates[k] for k in keep]
                 n = n_new
 
-            # ── Archive update ────────────────────────────────────────
-            archive_new = list(new_cands)
-            # Also include elite-search offspring if any
-            if trials.shape[0] > n:
-                archive_new += trial_cands[n:]
-            archive, z_ideal = _update_pareto_archive(
-                archive, archive_new, arc_size, r2_weights, z_ideal, model
-            )
+            archive = _update_cdp_archive(archive, candidates, archive_size, model)
 
             # ── Metrics ───────────────────────────────────────────────
             if params.compute_metrics and hv_hist.shape[0] > 0:
+                metric_candidates = archive if archive else candidates
                 if gen == 1 or gen == max_gen or gen % metric_interval == 0:
-                    if archive:
-                        aobj = _candidate_matrix(archive)
-                        hv_hist[gen-1, 0] = cal_metric(1, aobj, params.problem_index, objective_count)
-                        hv_hist[gen-1, 1] = cal_metric(2, aobj, params.problem_index, objective_count)
+                    metric_obj = _candidate_matrix(metric_candidates)
+                    hv_hist[gen - 1, 0] = cal_metric(1, metric_obj, params.problem_index, objective_count)
+                    hv_hist[gen - 1, 1] = cal_metric(2, metric_obj, params.problem_index, objective_count)
                 elif gen > 1:
-                    hv_hist[gen-1] = hv_hist[gen-2]
+                    hv_hist[gen - 1] = hv_hist[gen - 2]
 
         # ── Finalize run ──────────────────────────────────────────────
         ensure_dir(run_dir)
         if params.compute_metrics and hv_hist.shape[0] > 0:
             save_mat(run_dir / "gen_hv.mat", {"gen_hv": hv_hist})
 
-        # Fallback: if archive is still empty (pathological), use least-violating pop
-        if not archive:
-            keep = _cdp_sort_indices(obj, cv)[:arc_size]
-            archive = [candidates[k] for k in keep]
+        final_candidates = archive if archive else _update_cdp_archive([], candidates, archive_size, model)
+        if not final_candidates:
+            keep = _cdp_sort_indices(obj, cv)[: max(1, min(len(candidates), archive_size))]
+            final_candidates = [candidates[int(k)] for k in keep]
 
         _save_fleet_artifacts(
             run_dir=run_dir,
-            final_candidates=archive,
+            final_candidates=final_candidates,
             problem_index=params.problem_index,
             objective_count=objective_count,
             runtime_sec=float(time.perf_counter() - run_start),
             gpu_backend="numpy:cpu",
             gpu_peak_bytes=0.0,
             run_metadata={
-                "algorithmName": "APEX-SHADE",
+                "algorithmName": "L-SHADE-CDP",
                 "representation": "cart",
                 "requestedPopulation": float(params.population),
                 "effectivePopulation": float(n_init),
-                "archiveSize": float(arc_size),
+                "archiveSize": float(archive_size),
+                "minPopulation": float(n_min),
             },
         )
 
         if params.compute_metrics:
-            aobj = _candidate_matrix(archive)
-            run_scores[run_idx - 1] = np.array([
-                cal_metric(1, aobj, params.problem_index, objective_count),
-                cal_metric(2, aobj, params.problem_index, objective_count),
-            ], dtype=float)
+            aobj = _candidate_matrix(final_candidates)
+            run_scores[run_idx - 1] = np.array(
+                [
+                    cal_metric(1, aobj, params.problem_index, objective_count),
+                    cal_metric(2, aobj, params.problem_index, objective_count),
+                ],
+                dtype=float,
+            )
 
     if params.compute_metrics and _should_write_final_hv(params):
         save_mat(results_path / "final_hv.mat", {"bestScores": run_scores})
     return run_scores
+
+
+run_fleet_apex_shade = run_fleet_lshade_cdp

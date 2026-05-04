@@ -1,0 +1,19 @@
+# General fast benchmark protocol shared across algorithms.
+# Use this for quick validation before launching the full benchmark.
+mode: multi
+scenarioSet: paper_medium
+generations: 20
+population: 30
+runs: 2
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [3]
+seed: 11
+gpuMode: auto
+problemNames: ["c_100", "m_100", "s_120"]
+hardCollisionConstraint: true
+metricInterval: 5
+nRep: 30
+maxWorkers: 14

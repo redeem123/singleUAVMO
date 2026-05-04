@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 from typing import Any
 
 import numpy as np
@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from uav_benchmark.analysis.metrics.compute import _build_ref_points  # noqa: E402
 from uav_benchmark.analysis.metrics.report import (  # noqa: E402
     _igd_plus,
     _load_feasible_mask,
@@ -21,7 +22,6 @@ from uav_benchmark.analysis.metrics.report import (  # noqa: E402
     _load_popobj_raw,
     _load_runtime,
 )
-from uav_benchmark.analysis.metrics.compute import _build_ref_points  # noqa: E402
 from uav_benchmark.core.metrics import cal_metric  # noqa: E402
 from uav_benchmark.io.matlab import load_mat  # noqa: E402
 
@@ -160,11 +160,7 @@ def _collect_records(results_dir: Path, hv_samples: int, max_runs: int) -> list[
 
         objective_count = feasible_obj.shape[1] if feasible_obj.size else 4
         reference_point = ref_points.get(problem_name)
-        hv = (
-            cal_metric(1, feasible_obj, 0, objective_count, hv_samples, reference_point)
-            if feasible_obj.size
-            else 0.0
-        )
+        hv = cal_metric(1, feasible_obj, 0, objective_count, hv_samples, reference_point) if feasible_obj.size else 0.0
         spread = cal_metric(2, feasible_obj, 0, objective_count) if feasible_obj.size else 0.0
         convergence_rate = _load_convergence_rate(run_dir)
         igd_plus = _igd_plus(feasible_obj, reference_fronts.get(problem_name, np.zeros((0, 4), dtype=float)))
@@ -245,7 +241,7 @@ def _holm_adjust(rows: list[dict[str, Any]], group_keys: tuple[str, ...]) -> Non
         adjusted = [min(1.0, (m - rank) * p_value) for rank, (_idx, p_value) in enumerate(valid)]
         for rank in range(1, len(adjusted)):
             adjusted[rank] = max(adjusted[rank], adjusted[rank - 1])
-        for (idx, _), p_holm in zip(valid, adjusted):
+        for (idx, _), p_holm in zip(valid, adjusted, strict=False):
             rows[idx]["p_holm"] = float(p_holm)
 
 
@@ -259,21 +255,20 @@ def _pairwise_rows(
     rows: list[dict[str, Any]] = []
     problems = sorted({record.problem for record in records})
     for problem in problems:
-        control = [
-            record for record in records
-            if record.problem == problem and record.algorithm == control_algorithm
-        ]
+        control = [record for record in records if record.problem == problem and record.algorithm == control_algorithm]
         if not control:
             continue
-        competitors = sorted({
-            record.algorithm for record in records
-            if record.problem == problem and record.algorithm != control_algorithm
-        })
+        competitors = sorted(
+            {
+                record.algorithm
+                for record in records
+                if record.problem == problem and record.algorithm != control_algorithm
+            }
+        )
         for metric_name in metrics:
             for competitor_name in competitors:
                 competitor = [
-                    record for record in records
-                    if record.problem == problem and record.algorithm == competitor_name
+                    record for record in records if record.problem == problem and record.algorithm == competitor_name
                 ]
                 paired_left, paired_right = _paired_vectors(control, competitor, metric_name)
                 unpaired_left, unpaired_right = _unpaired_vectors(control, competitor, metric_name)
@@ -291,7 +286,8 @@ def _pairwise_rows(
                     test_name = "wilcoxon_signed_rank"
                     if wilcoxon is not None and left.size > 0 and right.size > 0:
                         try:
-                            p_value = float(wilcoxon(left, right, zero_method="wilcox", alternative="two-sided").pvalue)
+                            result = wilcoxon(left, right, zero_method="wilcox", alternative="two-sided")
+                            p_value = float(getattr(result, "pvalue", float("nan")))
                         except Exception:
                             p_value = float("nan")
                     else:
@@ -301,7 +297,8 @@ def _pairwise_rows(
                     test_name = "mann_whitney_u"
                     if mannwhitneyu is not None and left.size > 0 and right.size > 0:
                         try:
-                            p_value = float(mannwhitneyu(left, right, alternative="two-sided").pvalue)
+                            result = mannwhitneyu(left, right, alternative="two-sided")
+                            p_value = float(getattr(result, "pvalue", float("nan")))
                         except Exception:
                             p_value = float("nan")
                     else:
@@ -387,7 +384,8 @@ def _friedman_rows(
             comp_vec = matrix[:, algorithm_idx]
             if wilcoxon is not None and control_vec.size > 0 and comp_vec.size > 0:
                 try:
-                    post_p = float(wilcoxon(control_vec, comp_vec, zero_method="wilcox", alternative="two-sided").pvalue)
+                    result = wilcoxon(control_vec, comp_vec, zero_method="wilcox", alternative="two-sided")
+                    post_p = float(getattr(result, "pvalue", float("nan")))
                 except Exception:
                     post_p = float("nan")
             else:

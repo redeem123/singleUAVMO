@@ -1,0 +1,248 @@
+\providecommand\IfDocumentMetadataT[1]{}
+\providecommand\IfDocumentMetadataTF[2]{#2}
+\documentclass[a4paper,fleqn]{cas-sc}
+
+\usepackage[numbers]{natbib}
+\emergencystretch=2em
+\ExplSyntaxOn
+\RenewDocumentCommand \printorcid {} {}
+\ExplSyntaxOff
+
+\begin{document}
+\let\WriteBookmarks\relax
+\def\floatpagepagefraction{1}
+\def\textpagefraction{.001}
+
+\shorttitle{Learned Relational State for RL-Guided Adaptive Search}
+\shortauthors{Anonymous}
+
+\title[mode=title]{Learned Relational State for RL-Guided Adaptive Search in Constrained Multi-UAV Path Planning}
+
+\author[1]{Anonymous Author}
+
+\affiliation[1]{organization={Anonymous for review},
+                city={Review copy},
+                country={Submission draft}}
+
+\begin{abstract}
+Constrained multi-UAV path planning requires optimizers that respond to coordination pressure, safety constraints, and mission geometry during search. This paper is built around one scientific question: does learned relational state help RL-guided adaptive search, especially when the search process is dominated by multi-UAV interaction constraints? Prior reinforcement-learning-assisted evolutionary methods have largely relied on flat optimizer summaries, handcrafted pooled statistics, or non-UAV problem settings, leaving that question unresolved in realistic fleet planning. To answer it, this paper uses \texttt{SAC-SMOPSO} as the flagship experimental instrument and compares matched \texttt{flat}, \texttt{TRFTS-HAND}, and \texttt{TRFTS} state variants under a shared adaptive-control surface. The implementation couples population, archive, topology, interaction, environment, and temporal state blocks with SAC-guided control, and the repository packages staged checkpoint training, held-out checkpoint selection, frozen-controller encoder ablation, and machine-readable table export; source code and paper configs are available in the accompanying repository. Comparisons to stronger external optimizers are treated only as secondary practical context because they confound representation quality with optimizer family and training differences. Across the current replicated frozen-evaluation bundle (\texttt{810} runs over three replicas), \texttt{TRFTS} improves on \texttt{TRFTS-HAND} in hypervolume with mean delta \texttt{0.0173} and Wilcoxon \texttt{p = 1.63e-6}, while the stronger claim against the flat baseline is not yet supported. The current evidence therefore supports a focused scientific answer: learned relational state helps RL-guided adaptive search beyond a weaker handcrafted structured baseline in constrained multi-UAV path planning, but the stronger flat-baseline claim still needs to be earned.
+\end{abstract}
+
+\begin{highlights}
+\item The paper centers one question: whether learned relational state helps RL-guided adaptive search under multi-UAV interaction constraints.
+\item The manuscript distinguishes three matched state variants: \texttt{flat}, \texttt{TRFTS-HAND}, and \texttt{TRFTS}, evaluated through a shared control surface.
+\item \texttt{SAC-SMOPSO} is used as the flagship instrument, and the paper claim stays bounded to what the current repository and artifact pipeline actually support.
+\end{highlights}
+
+\begin{keywords}
+multi-UAV path planning \sep multi-objective optimization \sep reinforcement-learning-assisted evolutionary algorithms \sep relational state encoding \sep adaptive search control
+\end{keywords}
+
+\maketitle
+
+\section{Introduction}
+
+Multi-UAV path planning is no longer well described as a static single-agent shortest-path problem. Modern mission settings require coordination under safety constraints, coupled route topology, obstacle structure, and mission-level tradeoffs such as risk, energy, and makespan. Recent surveys of UAV path planning and multi-UAV planning repeatedly identify real-time adaptation, coordination complexity, safety-aware interaction handling, and scalable evaluation as persistent open problems. In parallel, the reinforcement-learning-assisted evolutionary algorithm literature has increasingly treated search-state design as a major determinant of adaptive optimization quality.
+
+The scientific question in this paper is deliberately narrower than ``can we build a stronger UAV optimizer?'' The paper asks whether learned relational state helps RL-guided adaptive search, especially under multi-UAV interaction constraints where the optimizer must respond to coupled route geometry, conflict pressure, and archive dynamics rather than only to a small handcrafted summary. The method is therefore not introduced as ``SAC plus PSO'' in a generic sense. \texttt{SAC-SMOPSO} is the flagship instrument used to answer a state-representation question.
+
+This framing matters because adaptive control is already established in the RL-assisted evolutionary-computation literature. The unresolved gap is not whether adaptation is useful in the abstract, but whether the quality of the search-state representation changes what the controller can learn in an interaction-rich multi-UAV setting. That gap is scientifically useful because it isolates one mechanism, state representation, and asks whether that mechanism matters when interaction structure is central to the task.
+
+The repository now contains three layers of evidence for this question. First, it implements a learned heterogeneous relational state encoder over population, archive, topology, interaction, environment, and temporal context. Second, it exposes a controlled encoder ablation path against both a flat baseline and a handcrafted structured baseline. Third, it generalizes the controller surface beyond a single PSO implementation by introducing adaptive variants of both SMPSO and NSGA-II. In this paper, however, those supporting variants are treated as portability evidence. The main empirical burden remains the \texttt{SAC-SMOPSO} study, and comparisons against stronger external optimizers are kept secondary because they do not isolate the state-representation mechanism.
+
+To address that gap, this paper makes three contributions:
+\begin{enumerate}
+\item It formulates a shared adaptive state for constrained multi-UAV multi-objective search that separates population, archive, topology, interaction, environment, and temporal context, and instantiates that state with matched \texttt{flat}, \texttt{TRFTS-HAND}, and \texttt{TRFTS} variants so the representation question can be studied directly.
+\item It realizes a flagship \texttt{SAC-SMOPSO} study around that representation family, using a common adaptive-control surface to test whether learned relational state helps beyond flat and handcrafted structured alternatives.
+\item It packages the paper workflow through stable CLI entry points, staged checkpoint selection, paper configs, and machine-readable artifact export so that the resulting scientific claim can be tied to explicit commands, seeds, and output tables.
+\end{enumerate}
+
+The remainder of the paper clarifies the problem setting, positions the method against nearby work, details the representation and training workflow, and then separates what is already evidence-backed from what still needs paper-grade replicated evaluation.
+
+\section{Problem Setting and Paper Scope}
+
+The repository addresses constrained multi-objective UAV path planning in a fleet-first benchmark architecture. Problems are stored as terrain and mission definitions under canonical \texttt{.mat} files such as \texttt{terrainStruct\_c\_100}, \texttt{terrainStruct\_m\_100}, and \texttt{terrainStruct\_s\_120}, and fleet variants are generated from these base terrains. All algorithms are evaluated through a shared mission-level evaluation pipeline that accounts for path feasibility, turn constraints, UAV separation, collision and conflict behavior, and mission objectives such as makespan, energy, and risk.
+
+The underlying mission evaluator returns a four-objective vector and detailed safety diagnostics. At the mission level, infeasibility is triggered when separation or turn-angle constraints are violated, or when collision constraints remain active. From the perspective of adaptive control, this means the controller is not merely shaping convergence speed; it is navigating a search process whose useful states depend on both objective quality and dynamic safety structure.
+
+The paper scope is therefore narrower than a full field survey and broader than a single algorithm note. It asks one primary question and two supporting questions:
+\begin{enumerate}
+\item Does learned relational state help RL-guided adaptive search in constrained multi-UAV path planning, especially under interaction-heavy fleet constraints?
+\item Does the learned representation add value beyond flat summaries and handcrafted pooled structure?
+\item Is that representation only useful in one optimizer instantiation, or does it show signs of portability?
+\end{enumerate}
+
+The present draft answers these questions at the level of method design, repository realization, and evidence path. It does not claim final benchmark superiority over the entire literature. For that reason, cross-family baseline comparisons are not treated as the main evidence block for the paper's central claim.
+
+\section{Related Work and SOTA Position}
+
+\subsection{UAV and Multi-UAV Path-Planning Literature}
+
+Recent surveys show that the dominant challenges in UAV path planning have shifted from simple route construction toward environment complexity, online adaptation, coordination, and safety-aware operation. The broad UAV review literature emphasizes real-time responsiveness, dynamic environments, and hybrid intelligent planning. The dedicated multi-UAV survey literature sharpens this further by emphasizing collaboration structure, communication burden, scalability, and collision avoidance under coordination constraints. From the perspective of this paper, those surveys justify a representation that explicitly models interaction and environment structure instead of only optimizer-internal scalar summaries.
+
+\subsection{RL-Assisted Evolutionary Optimization}
+
+The RL-EA survey literature already establishes that adaptive operator selection, adaptive parameter control, and algorithm-configuration policies are established directions. However, most methods in that literature still rely on relatively flat state summaries or problem-specific low-dimensional search descriptors. The important consequence is that the field has already accepted adaptive control as legitimate, but the next pressure point is state representation quality.
+
+\subsection{Closest Neighboring Methods}
+
+Three nearby strands matter most for positioning the new method.
+
+First, SAC-based PSO adaptation already exists in generic optimization settings. This means SAC by itself is not novel. Second, DQN-style adaptive operator-selection methods already exist in evolutionary multi-objective optimization. This means adaptive operator control is also not novel in isolation. Third, a more recent dynamic algorithm-configuration direction has moved toward learned graph-structured state in multi-objective combinatorial optimization. This is the closest methodological neighbor to the present work because it shows the field moving from handcrafted summaries toward learned structured representations.
+
+The method in this repository stands between these strands. It is more structurally ambitious than scalar RL-for-PSO or operator-selection baselines, because it explicitly models multi-UAV interaction, route topology, and environment structure. It is less mature than the strongest configuration-learning literature in terms of validated empirical breadth, because the key question is no longer whether the code path exists, but how the revised long-horizon protocol performs under replicated evaluation.
+
+\section{Method}
+
+\subsection{Core Idea}
+
+The central idea is to control adaptive multi-objective search with a learned relational representation of the search state, rather than with a small manually designed vector.
+
+The repository exposes three encoder and state variants:
+\begin{itemize}
+\item \texttt{flat}: no relational token content, scalar baseline only;
+\item \texttt{TRFTS-HAND}: structured state with handcrafted pooled encoding;
+\item \texttt{TRFTS}: structured state with a learned heterogeneous relational encoder.
+\end{itemize}
+
+This ablation isolates three hypotheses: whether any structure helps over flat summaries, whether a handcrafted structured state is already sufficient, and whether a learned relational encoder adds further value.
+
+\subsection{Shared Adaptive State}
+
+The current shared adaptive state contains seven blocks:
+\begin{itemize}
+\item global features;
+\item population tokens;
+\item archive tokens;
+\item topology tokens;
+\item interaction tokens;
+\item environment tokens;
+\item temporal tokens.
+\end{itemize}
+
+In the flagship implementation, the global state dimension is 24. Candidate tokens use 14 features, topology tokens use 8, interaction tokens use 7, environment tokens use 8, and the temporal window stores up to six global snapshots. This design is generic enough to support multiple adaptive algorithms while remaining specific to constrained multi-UAV path planning.
+
+The token construction is not abstract bookkeeping. Population and archive tokens encode objective and feasibility statistics. Topology tokens summarize path length, turning structure, overlap, and clearance pressure. Interaction tokens summarize pairwise path separation dynamics between UAVs. Environment tokens represent threats and no-fly regions. Temporal tokens preserve short-horizon search history.
+
+\subsection{Learned Relational Encoder}
+
+The strongest method-level novelty lies in the learned encoder. Instead of simple averaging, the current implementation uses a heterogeneous set-encoding design composed of masked self-attention blocks, learned seed pooling, temporal attention over recent search history, and a fused latent state used by both actor and critic networks.
+
+The handcrafted baseline keeps the same state decomposition but replaces the learned set encoders with context-conditioned pooled encoders and a GRU-based temporal summarizer. The flat baseline retains only global and temporal summaries while zeroing the token blocks. This controlled progression is essential because it keeps the control surface fixed while changing only the state representation family.
+
+\subsection{Controller and Control Surface}
+
+The controller uses a SAC policy over a continuous action schedule. In the live \texttt{SAC-SMOPSO} runner the legacy discrete operator branch is retained only for checkpoint and metadata compatibility and is disabled during execution. The active control vector instead modulates inertia, acceleration coefficients, velocity scale, archive focus, mutation probability, repair intensity, and reservoir-\texttt{SBX} recombination weight.
+
+In \texttt{SAC-SMOPSO}, the controller therefore adjusts the strength and balance of PSO motion, reservoir-\texttt{SBX} recombination, and targeted repair on a generation-by-generation basis, and it receives reward from post-step archive and feasibility changes. The resulting system is best described as adaptive search control rather than static hyperparameter tuning.
+
+\subsection{Algorithm Instantiations}
+
+The controller is currently instantiated in three adaptive algorithms:
+\begin{itemize}
+\item \texttt{SAC-SMOPSO};
+\item \texttt{RA-SMPSO};
+\item \texttt{RA-NSGA-II}.
+\end{itemize}
+
+For this paper, \texttt{SAC-SMOPSO} is the flagship experimental instrument because it provides the main controlled encoder comparison and checkpointed policy study. The \texttt{RA-SMPSO} and \texttt{RA-NSGA-II} variants are useful, but they should be positioned as supporting portability evidence rather than as equal headline claims.
+
+\section{Repo Realization and Experimental Protocol}
+
+The repository now contains the correct scaffolding for a serious paper workflow, and that workflow is anchored to named configs rather than ad hoc shell history. More importantly, the workflow is aligned to the paper's primary question: it is designed to compare matched state representations under fixed multi-UAV conditions rather than to maximize one optimizer's headline score.
+
+The intended training path uses the built-in \texttt{paper\_stage1} to \texttt{paper\_stage4} presets exposed through \texttt{sac-pretrain}. These stages progress from smaller fleets to the \texttt{uav8} transfer stage, keep a single checkpoint alive across stages, persist replay memory inside that checkpoint, and update \texttt{best\_controller.pt} from held-out frozen evaluation rather than from the last raw checkpoint.
+
+The main encoder comparison is defined by the paper relational encoder-ablation config. That protocol fixes 300 generations, population 80, 10 paired seeds, base problems \texttt{c\_100}, \texttt{m\_100}, and \texttt{s\_120}, fleet sizes 3, 5, and 8, and frozen evaluation against mode-specific \texttt{best\_controller.pt} checkpoints for \texttt{flat}, \texttt{TRFTS-HAND}, and \texttt{TRFTS}. The matched policy study uses a separate paper policy-mode config and compares \texttt{online}, \texttt{finetune}, and \texttt{frozen} with the \texttt{TRFTS} controller under the same scenario family. The primary interpretation is therefore not ``which optimizer wins?'' but ``what does the evidence say about the role of learned relational state?''
+
+The paper-facing artifact path is also concrete. Stage-local summaries are written under \path{results/sac_smopso_pretrain/mode/stages/stage/}, policy-mode results are exported to \path{policy_mode_summary.json}, and \texttt{export-relational-paper-artifacts} produces machine-readable summaries together with CSV and \LaTeX\ tables plus a manifest. Because \path{results/} is treated as generated workspace in the source repository, these paths refer to the supplementary artifact bundle released alongside the submission rather than to Git-tracked source files. Source code, named configs, and machine-readable result exports are available through the same repository workflow. Any stronger external baselines should be discussed only after the encoder-ablation evidence and should be labeled as secondary competitiveness context.
+
+At the time of writing, the cleanest completed evidence bundle in the working tree is the replicated frozen encoder ablation under \path{results/paper_artifacts/relational_state_evidence/replica_eval/replica_aggregate_summary.json}. The available per-replica summaries use three base terrains, fleet sizes 3, 5, and 8, ten held-out seeds, frozen policy mode, 50 generations, and population 20. That bundle is weaker than the intended full paper protocol, but it is the strongest completed comparative evidence currently available in the repository and is therefore the empirical basis of this manuscript.
+
+\section{Current Evidence and Limitations}
+
+\subsection{What Is Already Supported}
+
+The repository currently supports:
+\begin{itemize}
+\item shared adaptive-control code;
+\item three encoder variants;
+\item three adaptive algorithms;
+\item benchmark registration and normalization;
+\item paper configs;
+\item export of paper tables;
+\item targeted regression and smoke coverage for the paper workflow.
+\end{itemize}
+
+The working tree also contains completed frozen encoder-ablation summaries and aggregate comparison artifacts. These are sufficient to support a bounded empirical claim about the relative behavior of \texttt{TRFTS}, \texttt{TRFTS-HAND}, and \texttt{flat}.
+
+\subsection{What Is Not Yet Proven}
+
+The strongest limitation is no longer missing infrastructure. The repository includes a Torch-backed training path with replay-continuous checkpoints, a \texttt{uav8} curriculum stage, stage-level held-out checkpoint selection, and exportable paper tables. What is still missing is the final replicated evidence under the revised long-horizon protocol.
+
+The current artifact tree does not yet provide a complete paper-stage policy-mode study, and the strongest finished encoder evidence still comes from a shorter frozen-evaluation bundle rather than the target 300-generation paper protocol. Earlier shorter-budget runs suggested \texttt{TRFTS} beating \texttt{TRFTS-HAND}, but they did not establish a reliable advantage over the flat baseline. The cross-algorithm story is in a similar state: the controller surface is portable in code, yet full family-level generalization should not be claimed until matched replicated runs are reported.
+
+\subsection{Where the Method Stands Today}
+
+Relative to nearby SOTA strands, the method currently stands as follows:
+\begin{itemize}
+\item ahead of older scalar RL-for-PSO and operator-selection methods in representation richness and multi-UAV specificity;
+\item close in spirit to recent learned structured algorithm-configuration work, but in a different domain;
+\item ahead in architectural breadth inside this repository because it spans PSO-family and non-PSO instantiations;
+\item behind the most mature SOTA papers in full empirical validation and external benchmark breadth.
+\end{itemize}
+
+That is the honest position.
+
+\section{Discussion}
+
+The most important conceptual contribution is not that the repository uses SAC. SAC is already known. The deeper argument is that RL-guided adaptive search for constrained multi-UAV path planning should move from flat handcrafted summaries toward learned relational representations that better match the structure of the task.
+
+This repository now embodies that argument in code. It also makes the correct comparisons available:
+\begin{itemize}
+\item representation ablation;
+\item policy-mode ablation;
+\item cross-algorithm instantiation.
+\end{itemize}
+
+That combination is what gives the paper a plausible place in the current SOTA discussion. The strongest currently defensible contribution is not global optimizer superiority, but a narrower scientific answer: a learned relational encoder improves RL-guided adaptive search over a handcrafted structured baseline under replicated frozen evaluation.
+
+At present, the cross-algorithm aspect should be written as portability evidence, not as finished generalization evidence. The flagship empirical burden still belongs to the \texttt{SAC-SMOPSO} encoder study, and the supporting \texttt{RA-SMPSO} and \texttt{RA-NSGA-II} results should strengthen the method story only after matched replicated runs exist.
+
+At the same time, a strong paper must resist overstating the result. If stronger external optimizers outperform \texttt{SAC-SMOPSO} overall, that is useful practical context, but it does not by itself answer the representation question because the comparison is confounded by optimizer family, operator design, and training maturity. The current implementation is best described as methodologically strong, architecturally novel in the repository context, empirically promising, and not yet fully benchmark-proven.
+
+\section{Conclusion}
+
+This repository supports a credible paper built around a clear scientific question: does learned relational state help RL-guided adaptive search in constrained multi-UAV path planning? The current manuscript should answer that question through the flagship \texttt{SAC-SMOPSO} study, with cross-algorithm variants kept in a supporting role. More importantly, the current replicated evidence bundle supports a focused claim that the learned \texttt{TRFTS} encoder improves on the handcrafted \texttt{TRFTS-HAND} baseline under frozen evaluation.
+
+The next step is precise rather than generic: rerun the full paper-grade flat-baseline study under the restored runtime path, then decide whether the stronger \texttt{TRFTS > flat} claim can be added. Until then, the submission should stay centered on the claim that is already backed by the exported replicated artifacts and should resist drifting back into a generic ``new optimizer'' story.
+
+\begin{thebibliography}{00}
+
+\bibitem{ref1}
+Advances in UAV Path Planning: A Comprehensive Review of Methods, Challenges, and Future Directions.
+\textit{Drones}, 2025.
+
+\bibitem{ref2}
+A Survey on Multi-UAV Path Planning: Classification, Algorithms, Open Research Problems, and Future Directions.
+\textit{Drones}, 2025.
+
+\bibitem{ref3}
+Reinforcement learning-assisted evolutionary algorithm: A survey and research opportunities.
+\textit{Swarm and Evolutionary Computation}, 2024.
+
+\bibitem{ref4}
+Soft Actor-Critic Approach to Self-Adaptive Particle Swarm Optimisation.
+\textit{Mathematics}, 2024.
+
+\bibitem{ref5}
+Adaptive operator selection with dueling deep Q-network for evolutionary multi-objective optimization.
+\textit{Neurocomputing}, 2024.
+
+\bibitem{ref6}
+Graph-Supported Dynamic Algorithm Configuration for Multi-Objective Combinatorial Optimization.
+\textit{Proceedings of Machine Learning Research}, 2025.
+
+\end{thebibliography}
+
+\end{document}

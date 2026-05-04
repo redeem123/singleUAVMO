@@ -1,0 +1,20 @@
+algorithms:
+  - NMOPSO
+  - CMOSMA
+  - SAC-SMOPSO
+allowExperimentalAlgorithms: true
+
+problems:
+  - c_100
+  - s_120
+
+fleet_sizes:
+  - 1
+  - 3
+  - 5
+
+generations: 60
+population: 40
+runs: 3
+separation_min: 10.0
+max_turn_deg: 75.0

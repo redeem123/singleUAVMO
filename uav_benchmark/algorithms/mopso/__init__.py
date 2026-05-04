@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.shared.fleet_runner import run_fleet_mopso
 from uav_benchmark.algorithms.shared.mission_stats import build_mission_stats
+from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.evaluate_path import evaluate_path
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort
@@ -84,7 +83,7 @@ def _update_archive(archive: list[Particle], max_size: int, divisions: int) -> l
         return []
     objective_matrix = _cost_matrix(archive)
     front_no, _ = n_d_sort(objective_matrix.copy(), None, 1)
-    archive = [particle for particle, front in zip(archive, front_no) if front == 1]
+    archive = [particle for particle, front in zip(archive, front_no, strict=False) if front == 1]
     if len(archive) <= max_size:
         return archive
     objective_matrix = _cost_matrix(archive)
@@ -135,7 +134,7 @@ def _roulette_wheel(n_select: int, crowded: np.ndarray) -> np.ndarray:
 
 def _rep_selection(archive: list[Particle], population_size: int, divisions: int) -> np.ndarray:
     pop_obj = _cost_matrix(archive)
-    n_points = pop_obj.shape[0]
+    pop_obj.shape[0]
     max_values = np.max(pop_obj, axis=0)
     min_values = np.min(pop_obj, axis=0)
     with np.errstate(invalid="ignore"):
@@ -285,7 +284,9 @@ def run_mopso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
             )
         archive = _update_archive(list(particles), params.population, divisions)
         personal_best = [_copy_particle(particle) for particle in particles]
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             if archive:
@@ -302,8 +303,12 @@ def run_mopso(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
             objective_matrix = _cost_matrix(archive) if archive else _cost_matrix(particles)
             if params.compute_metrics:
                 if generation == 1 or generation == params.generations or generation % metric_interval == 0:
-                    hv_history[generation - 1, 0] = cal_metric(1, objective_matrix, params.problem_index, objective_count)
-                    hv_history[generation - 1, 1] = cal_metric(2, objective_matrix, params.problem_index, objective_count)
+                    hv_history[generation - 1, 0] = cal_metric(
+                        1, objective_matrix, params.problem_index, objective_count
+                    )
+                    hv_history[generation - 1, 1] = cal_metric(
+                        2, objective_matrix, params.problem_index, objective_count
+                    )
                 elif generation > 1:
                     hv_history[generation - 1] = hv_history[generation - 2]
 

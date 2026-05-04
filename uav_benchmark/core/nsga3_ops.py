@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -27,20 +27,30 @@ def _uniform_point_nbi(n_points: int, objective_count: int) -> tuple[np.ndarray,
     h1 = 1
     while math.comb(h1 + objective_count, objective_count - 1) <= n_points:
         h1 += 1
-    combinations = np.array(list(itertools.combinations(range(1, h1 + objective_count), objective_count - 1)), dtype=int)
+    combinations = np.array(
+        list(itertools.combinations(range(1, h1 + objective_count), objective_count - 1)), dtype=int
+    )
     if combinations.size == 0:
         vectors = np.ones((1, objective_count), dtype=float) / objective_count
         return vectors, vectors.shape[0]
     adjustment = np.arange(objective_count - 1, dtype=int)
     vectors = combinations - adjustment - 1
-    vectors = np.hstack([vectors, np.full((vectors.shape[0], 1), h1, dtype=int)]) - np.hstack([np.zeros((vectors.shape[0], 1), dtype=int), vectors])
+    vectors = np.hstack([vectors, np.full((vectors.shape[0], 1), h1, dtype=int)]) - np.hstack(
+        [np.zeros((vectors.shape[0], 1), dtype=int), vectors]
+    )
     weights = vectors / h1
     if h1 < objective_count:
         h2 = 0
-        while math.comb(h1 + objective_count - 1, objective_count - 1) + math.comb(h2 + objective_count, objective_count - 1) <= n_points:
+        while (
+            math.comb(h1 + objective_count - 1, objective_count - 1)
+            + math.comb(h2 + objective_count, objective_count - 1)
+            <= n_points
+        ):
             h2 += 1
         if h2 > 0:
-            combinations_two = np.array(list(itertools.combinations(range(1, h2 + objective_count), objective_count - 1)), dtype=int)
+            combinations_two = np.array(
+                list(itertools.combinations(range(1, h2 + objective_count), objective_count - 1)), dtype=int
+            )
             vectors_two = combinations_two - adjustment - 1
             vectors_two = np.hstack([vectors_two, np.full((vectors_two.shape[0], 1), h2, dtype=int)]) - np.hstack(
                 [np.zeros((vectors_two.shape[0], 1), dtype=int), vectors_two]
@@ -95,13 +105,21 @@ def environmental_selection_nsga3(
     next_mask = front_no < max_front
     last_indices = np.where(front_no == max_front)[0]
     if np.sum(next_mask) < n_keep and last_indices.size > 0:
-        choose = _last_selection(objective_matrix[next_mask], objective_matrix[last_indices], int(n_keep - np.sum(next_mask)), reference_points, zmin)
+        choose = _last_selection(
+            objective_matrix[next_mask],
+            objective_matrix[last_indices],
+            int(n_keep - np.sum(next_mask)),
+            reference_points,
+            zmin,
+        )
         next_mask[last_indices[choose]] = True
     selected = [population[index] for index in np.where(next_mask)[0]]
     return selected
 
 
-def _last_selection(pop_obj_first: np.ndarray, pop_obj_last: np.ndarray, k_keep: int, reference_points: np.ndarray, zmin: np.ndarray) -> np.ndarray:
+def _last_selection(
+    pop_obj_first: np.ndarray, pop_obj_last: np.ndarray, k_keep: int, reference_points: np.ndarray, zmin: np.ndarray
+) -> np.ndarray:
     if k_keep <= 0:
         return np.zeros(pop_obj_last.shape[0], dtype=bool)
     pop_obj = np.vstack([pop_obj_first, pop_obj_last]) - zmin.reshape(1, -1)
@@ -119,9 +137,16 @@ def _last_selection(pop_obj_first: np.ndarray, pop_obj_last: np.ndarray, k_keep:
         axis_intercept = 1.0 / hyperplane
     except np.linalg.LinAlgError:
         axis_intercept = np.max(pop_obj, axis=0)
-    axis_intercept[~np.isfinite(axis_intercept)] = np.max(pop_obj, axis=0)[~np.isfinite(axis_intercept)]
-    axis_intercept[axis_intercept == 0] = 1.0
-    normalized = pop_obj / axis_intercept.reshape(1, -1)
+    finite_pop = np.where(np.isfinite(pop_obj), pop_obj, 0.0)
+    fallback_intercept = np.max(finite_pop, axis=0)
+    fallback_intercept[np.abs(fallback_intercept) <= 1e-12] = 1.0
+    invalid_intercept = (~np.isfinite(axis_intercept)) | (np.abs(axis_intercept) <= 1e-12)
+    axis_intercept[invalid_intercept] = fallback_intercept[invalid_intercept]
+    intercept_row = axis_intercept.reshape(1, -1)
+    safe_pop = np.where(np.isposinf(pop_obj), intercept_row, pop_obj)
+    safe_pop = np.nan_to_num(safe_pop, nan=0.0, posinf=1.0, neginf=0.0)
+    normalized = safe_pop / intercept_row
+    normalized = np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=0.0)
 
     cosine = 1.0 - _pairwise_cosine_distance(normalized, reference_points)
     distance = np.linalg.norm(normalized, axis=1).reshape(-1, 1) * np.sqrt(np.maximum(0.0, 1.0 - cosine**2))
@@ -157,10 +182,18 @@ def _last_selection(pop_obj_first: np.ndarray, pop_obj_last: np.ndarray, k_keep:
 def _pairwise_cosine_distance(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     lhs = np.asarray(lhs, dtype=float)
     rhs = np.asarray(rhs, dtype=float)
+    lhs = np.nan_to_num(lhs, nan=0.0, posinf=0.0, neginf=0.0)
+    rhs = np.nan_to_num(rhs, nan=0.0, posinf=0.0, neginf=0.0)
+    lhs_scale = np.max(np.abs(lhs), axis=1, keepdims=True)
+    rhs_scale = np.max(np.abs(rhs), axis=1, keepdims=True)
+    lhs_scale[~np.isfinite(lhs_scale) | (lhs_scale <= 0.0)] = 1.0
+    rhs_scale[~np.isfinite(rhs_scale) | (rhs_scale <= 0.0)] = 1.0
+    lhs = lhs / lhs_scale
+    rhs = rhs / rhs_scale
     lhs_norm = np.linalg.norm(lhs, axis=1, keepdims=True)
     rhs_norm = np.linalg.norm(rhs, axis=1, keepdims=True)
-    lhs_norm[lhs_norm == 0] = 1.0
-    rhs_norm[rhs_norm == 0] = 1.0
-    similarity = lhs @ rhs.T / (lhs_norm * rhs_norm.T)
+    lhs_norm[~np.isfinite(lhs_norm) | (lhs_norm <= 0.0)] = 1.0
+    rhs_norm[~np.isfinite(rhs_norm) | (rhs_norm <= 0.0)] = 1.0
+    similarity = (lhs / lhs_norm) @ (rhs / rhs_norm).T
     similarity = np.clip(similarity, -1.0, 1.0)
     return 1.0 - similarity

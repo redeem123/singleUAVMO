@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,7 +14,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from uav_benchmark.io.matlab import load_mat  # noqa: E402
-
 
 DEFAULT_STAGE_KEYS = ("evalTimeSec", "updateTimeSec", "archiveTimeSec", "atlasTimeSec")
 

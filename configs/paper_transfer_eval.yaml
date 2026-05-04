@@ -1,0 +1,13 @@
+Generations: 20
+allowExperimentalAlgorithms: true
+population: 14
+Runs: 2
+mode: fleet
+fleetSizes: [3, 5]
+separationMin: 10.0
+maxTurnDeg: 75.0
+scenarioSet: paper_medium
+gpuMode: off
+algorithmProfile: state-representation
+stateRepresentation: TRFTS
+policyMode: frozen

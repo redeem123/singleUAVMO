@@ -1,0 +1,26 @@
+# Focused SEM-4D run matched to the CGPO_full inspection protocol.
+mode: fleet
+scenarioSet: paper_medium
+algorithms: ["SEM-4D"]
+allowExperimentalAlgorithms: true
+generations: 500
+population: 100
+runs: 1
+computeMetrics: true
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [3, 5]
+seed: 19
+gpuMode: off
+problemNames: ["c_100", "m_100", "s_120"]
+metricInterval: 10
+sem4dShieldIterations: 4
+sem4dTimeSamples: 48
+sem4dMaxShieldInsertions: 16
+sem4dRMP: 0.65
+sem4dUavTransferRate: 0.25
+sem4dRepairGain: 0.65
+resumeExistingRuns: false
+maxWorkers: 6

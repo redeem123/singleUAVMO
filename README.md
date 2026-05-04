@@ -4,6 +4,14 @@
 
 This repository provides a reproducible benchmark framework for constrained UAV path planning and mission optimization. It uses one fleet-based architecture and compares multiple evolutionary baselines.
 
+## Current Publication Direction
+
+The active manuscript direction is **CGPO: Constraint-Graph Policy Optimizer** as a MOEA-style constrained evolutionary algorithm for multi-UAV path planning. Keep the method framing in one place:
+
+- `research/constraint_graph_policy_optimizer_proposal.md`
+
+`SAC-SMOPSO`, `TRFTS`, `TRFTS-HAND`, `RA-SMPSO`, and `RA-NSGA-II` remain legacy research artifacts for reproducibility and historical comparison.
+
 ### Recent Upgrades
 - **Performance:** Numba JIT acceleration for numerical evaluation pipelines and KDTree spatial indexing for $O(K \log K)$ fleet conflict detection.
 - **Accuracy:** Smooth bilinear terrain height interpolation.
@@ -32,7 +40,9 @@ python3 -m pip install -r requirements-python.txt
 Optional GPU backends:
 
 ```bash
-python3 -m pip install -r requirements-gpu.txt
+# Apple Silicon MPS/CPU uses the default Torch wheel from requirements-python.txt.
+# NVIDIA CUDA hosts should force-reinstall so the CUDA wheel replaces CPU Torch.
+python3 -m pip install --upgrade --force-reinstall -r requirements-gpu.txt
 ```
 
 Install dev tooling (lint/test):
@@ -49,10 +59,16 @@ Base-fleet smoke (`fleet_size=1`):
 python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet1 --generations 5 --population 20 --runs 1 --fleet-size 1
 ```
 
-Fleet smoke:
+Benchmark test:
 
 ```bash
-python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/smoke_fleet --protocol configs/smoke_fleet.yaml --gpu-mode auto
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/benchmark_test --protocol configs/test_benchmark.yaml --gpu-mode auto
+```
+
+Full benchmark:
+
+```bash
+python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/benchmark_full --protocol configs/full_benchmark.yaml --gpu-mode auto
 ```
 
 NMOPSO ablation (legacy single-UAV path study):
@@ -77,7 +93,8 @@ Default benchmark scope (without overrides):
 Cleanup generated artifacts/caches, or archive old runs:
 
 ```bash
-python3 scripts/clean_workspace.py --results --caches
+python3 scripts/clean_workspace.py --caches --scratch
+python3 scripts/clean_workspace.py --caches --scratch --yes
 python3 -m uav_benchmark.cli archive --results-dir results --archive-dir archives
 ```
 
@@ -86,38 +103,36 @@ Additional run controls (`--extra-json`):
 - `resumeExistingRuns: true|false`: skip completed `Run_*` folders and continue interrupted runs.
 - `maxWorkers: N`: cap worker processes (default is `14`).
 - `problemNames: ["c_100_uav3", ...]`: run only selected problems/scenarios.
+- `allowExperimentalAlgorithms: true|false`: permit research-only algorithms in the benchmark selector.
 
 ## Fleet Paper Pipeline
+
+CGPO workflow:
+
+```bash
+# Main paper run. CGPO is evaluated as a lean evolutionary algorithm:
+# CIG + PPF + OVO, with no repair layer and no matched hybrid baselines.
+./.venv/bin/python -m uav_benchmark.cli benchmark --project-root . --results-dir results/cgpo_swec_head2head --protocol configs/paper_cgpo_swec_head2head.yaml --gpu-mode off
+./.venv/bin/python -m uav_benchmark.cli benchmark --project-root . --results-dir results/cgpo_swec_reference_single_uav --protocol configs/paper_cgpo_swec_reference_single_uav.yaml --gpu-mode off
+./.venv/bin/python -m uav_benchmark.cli benchmark --project-root . --results-dir results/cgpo_swec_ablation --protocol configs/paper_cgpo_swec_ablation.yaml --gpu-mode off
+./.venv/bin/python scripts/analyze_cgpo_ablation.py --project-root . --results-dir results/cgpo_swec_ablation --output-dir results/cgpo_swec_ablation/metrics
+```
+
+Use `research/constraint_graph_policy_optimizer_proposal.md` for the lean CGPO claim discipline, ablation decision rules, and required evidence.
 
 Run the paper artifact pipeline:
 
 ```bash
-python3 -m uav_benchmark.cli paper-artifacts --project-root . --results-dir results/paper_artifacts --protocol configs/paper_medium_fleet.yaml --gpu-mode auto
+python3 -m uav_benchmark.cli paper-artifacts --project-root . --results-dir results/paper_artifacts --protocol configs/full_benchmark.yaml --gpu-mode auto
 ```
 
 This runs benchmark + report + stats + fleet plots.
-
-Helper scripts:
-
-```bash
-python3 scripts/run_mogwo_component_ablation.py
-python3 scripts/run_benchmark_fleet.py
-```
-
-- `run_attention_ablation.py`: strict attention ablation matrix with run-manifest and quality gates.
-- `publication_readiness_audit.py`: mandatory publication-gate audit over ablation + benchmark artifacts.
-- `export_publication_tables.py`: export paper-ready tables in CSV/Markdown/LaTeX.
-- `run_publication_suite.py`: end-to-end publication bundle orchestration (run/audit/tables/package).
-
-Publication docs:
-
-- `docs/publication_pipeline.md`
-- `docs/reproducibility.md`
 
 ## Core CLI Commands
 
 ```bash
 python3 -m uav_benchmark.cli --help
+python3 -m uav_benchmark.cli list-algorithms
 python3 -m uav_benchmark.cli benchmark --project-root . --results-dir results/bench
 python3 -m uav_benchmark.cli ablation --project-root . --results-dir results/nmopso_ablation
 python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
@@ -127,6 +142,7 @@ python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 
 - `uav_benchmark/`, `tests/`, `configs/`, `scripts/`, `problems/`, and `docs/` are the tracked source and contributor surfaces.
 - `results/` and `logs/` are runtime-generated workspace directories. They stay in the repo root for stable CLI defaults, but their contents are ignored in Git.
+- `tmp/`, `tmp_inspect/`, and `output/` are local scratch/export directories and are ignored in Git.
 - `research/` is the local research workspace. See `research/README.md` for where scratch notes, paper PDFs, and writing drafts now live.
 - `scripts/legacy/` holds preserved legacy helpers, including the old problem-generation scripts.
 
@@ -140,7 +156,7 @@ python3 -m uav_benchmark.cli path-visualizer c_100 1 --algorithm NMOPSO --show
 - `tests/`: Unit and smoke tests.
 - `docs/`: Stable contributor and reproducibility documentation.
 - `research/`: Local-only research workspace for paper corpora, writing drafts, and scratch artifacts.
-- `uav_benchmark/analysis/generate_research_plots.py`: Python launcher that runs embedded MATLAB plotting driver.
+- `uav_benchmark/analysis/plotting/research.py`: Python launcher that runs embedded MATLAB plotting driver.
 - `results/`: Generated benchmark outputs (ignored in Git except for the placeholder README).
 - `logs/`: Generated logs and background-run metadata (ignored in Git except for the placeholder README).
 - `requirements-python.txt`, `requirements-gpu.txt`: CPU/GPU dependency sets.
@@ -150,6 +166,7 @@ Contributor docs:
 
 - `docs/`: protocol, migration, and reproducibility notes.
 - `research/README.md`: local research asset layout and policy.
+- `research/constraint_graph_policy_optimizer_proposal.md`: lean CGPO method and paper-framing note.
 - `scripts/legacy/`: legacy utilities retained outside the active source surface.
 
 ## Fleet Result Artifacts

@@ -1,0 +1,71 @@
+\begin{tikzpicture}[
+  font=\sffamily\scriptsize,
+  >=Stealth,
+  stage/.style={
+    rectangle,
+    draw=black!70,
+    thick,
+    rounded corners=2pt,
+    align=center,
+    minimum height=8mm,
+    minimum width=20mm,
+    inner xsep=4pt,
+    inner ysep=4pt,
+    fill=white
+  },
+  mechanism/.style={
+    stage,
+    draw=blue!55!black,
+    fill=blue!5,
+    minimum width=31mm,
+    minimum height=17mm
+  },
+  note/.style={
+    rectangle,
+    draw=black!45,
+    dashed,
+    rounded corners=2pt,
+    align=left,
+    fill=gray!6,
+    inner sep=5pt,
+    text width=45mm
+  },
+  flow/.style={->, thick, draw=black!75},
+  hint/.style={font=\sffamily\tiny, text=black!70, align=center, text width=31mm}
+]
+
+\node[stage] (pop) {Population};
+\node[stage, right=6mm of pop] (evalA) {Mission\\evaluator};
+\node[mechanism, right=6mm of evalA] (cig) {\textbf{CIG}\\Constraint graph\\[-1pt]\textit{tension summaries}};
+\node[mechanism, right=6mm of cig] (ppf) {\textbf{PPF}\\Pareto pressure\\[-1pt]\textit{parent probabilities}};
+\node[stage, right=6mm of ppf] (parents) {Parent\\selection};
+
+\node[mechanism, below=18mm of parents] (ovo) {\textbf{OVO}\\Fleet-aware variation\\[-1pt]\textit{blend, perturb, coordinate}};
+\node[stage, left=6mm of ovo] (offspring) {Offspring};
+\node[stage, left=6mm of offspring] (bounded) {Bounded\\candidate};
+\node[stage, left=6mm of bounded] (evalB) {Mission\\evaluator};
+\node[stage, fill=gray!10, left=6mm of evalB] (archive) {Constrained\\elite archive};
+\node[stage, left=6mm of archive] (next) {Next\\population};
+
+\draw[flow] (pop) -- (evalA);
+\draw[flow] (evalA) -- (cig);
+\draw[flow] (cig) -- (ppf);
+\draw[flow] (ppf) -- (parents);
+\draw[flow] (parents) -- (ovo);
+\draw[flow] (ovo) -- (offspring);
+\draw[flow] (offspring) -- (bounded);
+\draw[flow] (bounded) -- (evalB);
+\draw[flow] (evalB) -- (archive);
+\draw[flow] (archive) -- (next);
+\draw[flow] (next.west) -- ++(-5mm,0) |- (pop.west);
+
+\node[hint, above=2mm of cig] {terrain, altitude, turn\\pairwise, smoothing pressure};
+\node[hint, above=2mm of ppf] {rank, violation, diversity\\boundary usefulness, tension};
+\node[note] at ($(cig.south)!0.5!(evalB.north)+(15mm,0)$) {
+  \textbf{Lean active method}\\
+  $\times$ no explicit repair stack\\
+  $\times$ no feasibility projection\\
+  $\times$ no constructive route prior
+};
+
+\end{tikzpicture}

@@ -20,7 +20,7 @@ from uav_benchmark.io.matlab import load_mat, load_terrain_struct
 
 try:  # Optional dependency gate for statistical tests.
     from scipy.stats import mannwhitneyu
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency
     mannwhitneyu = None
 
 
@@ -151,9 +151,9 @@ def _interpolate_path(path_xyz: np.ndarray, step_size: float) -> np.ndarray:
     for seg_idx in range(path_xyz.shape[0] - 1):
         n_steps = steps_per_seg[seg_idx]
         t = np.arange(1, n_steps + 1, dtype=float) / n_steps
-        result[cursor : cursor + n_steps] = (
-            (1.0 - t[:, np.newaxis]) * path_xyz[seg_idx] + t[:, np.newaxis] * path_xyz[seg_idx + 1]
-        )
+        result[cursor : cursor + n_steps] = (1.0 - t[:, np.newaxis]) * path_xyz[seg_idx] + t[:, np.newaxis] * path_xyz[
+            seg_idx + 1
+        ]
         cursor += n_steps
     return result[:cursor]
 
@@ -327,7 +327,7 @@ def _holm_correct(rows: list[dict[str, Any]]) -> None:
         # Enforce monotonicity.
         for rank in range(1, len(adjusted_ordered)):
             adjusted_ordered[rank] = max(adjusted_ordered[rank], adjusted_ordered[rank - 1])
-        for (idx, _), adjusted in zip(valid, adjusted_ordered):
+        for (idx, _), adjusted in zip(valid, adjusted_ordered, strict=False):
             rows[idx]["p_holm"] = float(adjusted)
 
 
@@ -448,10 +448,7 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
         model = terrain_cache.get(problem_name)
         if model is None:
             terrain_file = project_root / "problems" / f"terrainStruct_{problem_name}.mat"
-            if terrain_file.exists():
-                model = load_terrain_struct(terrain_file)
-            else:
-                model = {}
+            model = load_terrain_struct(terrain_file) if terrain_file.exists() else {}
             terrain_cache[problem_name] = model
 
         n_total = int(pop_obj.shape[0]) if pop_obj.ndim == 2 else 0
@@ -462,7 +459,11 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
 
         reference_point = ref_points.get(problem_name)
         objective_count = feasible_obj.shape[1] if feasible_obj.size else 4
-        hv_value = cal_metric(1, feasible_obj, 0, objective_count, config.hv_samples, reference_point) if feasible_obj.size else 0.0
+        hv_value = (
+            cal_metric(1, feasible_obj, 0, objective_count, config.hv_samples, reference_point)
+            if feasible_obj.size
+            else 0.0
+        )
         igd_value = _igd_plus(feasible_obj, reference_fronts.get(problem_name, np.zeros((0, 4), dtype=float)))
 
         runtime_sec = _load_runtime(run_dir)
@@ -531,14 +532,28 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
         "mission_energy",
     )
     for problem_name in sorted({record.problem for record in records}):
-        baseline = [record for record in records if record.problem == problem_name and record.algorithm == config.baseline_algorithm]
+        baseline = [
+            record
+            for record in records
+            if record.problem == problem_name and record.algorithm == config.baseline_algorithm
+        ]
         if not baseline:
             continue
-        competitors = sorted({record.algorithm for record in records if record.problem == problem_name and record.algorithm != config.baseline_algorithm})
+        competitors = sorted(
+            {
+                record.algorithm
+                for record in records
+                if record.problem == problem_name and record.algorithm != config.baseline_algorithm
+            }
+        )
         for metric in metrics:
             baseline_values = _finite_array([float(getattr(record, metric)) for record in baseline])
             for algorithm_name in competitors:
-                competitor = [record for record in records if record.problem == problem_name and record.algorithm == algorithm_name]
+                competitor = [
+                    record
+                    for record in records
+                    if record.problem == problem_name and record.algorithm == algorithm_name
+                ]
                 competitor_values = _finite_array([float(getattr(record, metric)) for record in competitor])
                 p_value = float("nan")
                 if mannwhitneyu is not None and baseline_values.size > 0 and competitor_values.size > 0:
@@ -563,13 +578,25 @@ def generate_benchmark_report(config: ReportConfig) -> dict[str, Any]:
     # Scenario-level win/tie/loss against baseline by HV (higher better).
     wtl_rows: list[dict[str, Any]] = []
     for problem_name in sorted({record.problem for record in records}):
-        baseline = [record for record in records if record.problem == problem_name and record.algorithm == config.baseline_algorithm]
+        baseline = [
+            record
+            for record in records
+            if record.problem == problem_name and record.algorithm == config.baseline_algorithm
+        ]
         if not baseline:
             continue
         baseline_values = _finite_array([record.hv for record in baseline])
         baseline_median = _median(baseline_values)
-        for algorithm_name in sorted({record.algorithm for record in records if record.problem == problem_name and record.algorithm != config.baseline_algorithm}):
-            comp = [record for record in records if record.problem == problem_name and record.algorithm == algorithm_name]
+        for algorithm_name in sorted(
+            {
+                record.algorithm
+                for record in records
+                if record.problem == problem_name and record.algorithm != config.baseline_algorithm
+            }
+        ):
+            comp = [
+                record for record in records if record.problem == problem_name and record.algorithm == algorithm_name
+            ]
             comp_values = _finite_array([record.hv for record in comp])
             comp_median = _median(comp_values)
             if not np.isfinite(comp_median) or not np.isfinite(baseline_median):

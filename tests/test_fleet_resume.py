@@ -27,6 +27,7 @@ class MultiResumeTest(unittest.TestCase):
                 compute_metrics=False,
             )
             self.assertIsNotNone(resume_scores)
+            assert resume_scores is not None
             np.testing.assert_allclose(resume_scores, np.zeros(2, dtype=float))
 
     def test_resume_keeps_legacy_final_popobj_key_support(self) -> None:

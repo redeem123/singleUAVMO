@@ -9,7 +9,9 @@ python3 -m pip install -r requirements-python.txt
 Optional GPU backend:
 
 ```bash
-python3 -m pip install -r requirements-gpu.txt
+# Apple Silicon MPS/CPU uses the default Torch wheel from requirements-python.txt.
+# NVIDIA CUDA hosts should force-reinstall so the CUDA wheel replaces CPU Torch.
+python3 -m pip install --upgrade --force-reinstall -r requirements-gpu.txt
 ```
 
 ## One-Command Paper Artifact Run
@@ -18,7 +20,7 @@ python3 -m pip install -r requirements-gpu.txt
 python3 -m uav_benchmark.cli paper-artifacts \
   --project-root . \
   --results-dir results/paper_artifacts \
-  --protocol configs/paper_medium_fleet.yaml \
+  --protocol configs/full_benchmark.yaml \
   --gpu-mode auto
 ```
 
@@ -31,21 +33,20 @@ python3 -m uav_benchmark.cli paper-artifacts \
 - `results/paper_artifacts/metrics/benchmark_metrics_summary.json`
 - `results/paper_artifacts/plots_fleet_uav/*.fig`
 
-## Smoke Validation
+## Benchmark Test
 
 ```bash
 python3 -m uav_benchmark.cli benchmark \
   --project-root . \
-  --results-dir results/smoke_fleet \
-  --protocol configs/smoke_fleet.yaml \
-  --compute-metrics \
+  --results-dir results/benchmark_test \
+  --protocol configs/test_benchmark.yaml \
   --gpu-mode off
 ```
 
 ## Unit Tests
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
+python3 -m pytest -q
 ```
 
 ## MOGWO Next Phase Helpers

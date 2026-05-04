@@ -6,9 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.shared.fleet_runner import run_fleet_nsga3
 from uav_benchmark.algorithms.shared.mission_stats import build_mission_stats
+from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.chromosome import Chromosome
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import f_operator, tournament_selection
@@ -35,6 +35,7 @@ def run_nsga3(model: dict[str, Any], params: BenchmarkParams) -> np.ndarray:
     reference_points, adjusted_population = uniform_point(params.population, objective_count, reference_method)
     if adjusted_population != params.population:
         from dataclasses import replace
+
         params = replace(params, population=adjusted_population)
     use_constraints = bool(params.extra.get("useConstraints", False))
 
@@ -94,12 +95,11 @@ def _nsga3_legacy_run(
     constraint_vector = _constraint_vector(population) if use_constraints else None
     zmin = _zmin(objective_matrix, constraint_vector)
 
-    hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+    hv_history = (
+        np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+    )
     for generation in range(1, params.generations + 1):
-        if use_constraints:
-            cv = _constraint_vector(population)
-        else:
-            cv = np.zeros(params.population, dtype=float)
+        cv = _constraint_vector(population) if use_constraints else np.zeros(params.population, dtype=float)
         mating_pool = tournament_selection(2, params.population, cv)
         offspring = f_operator(population, mating_pool, boundary, model)
         offspring_objective = np.array([candidate.objs for candidate in offspring], dtype=float)

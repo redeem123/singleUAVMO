@@ -24,12 +24,17 @@ from uav_benchmark.io.results import ensure_dir
 
 
 def _assistant_model(model: dict[str, Any]) -> dict[str, Any]:
+    """Build the paper-style auxiliary task while keeping terrain/buildings.
+
+    The TSKAC assistant problem removes threat/no-fly pressure, not the physical
+    terrain surface. In this benchmark buildings and mountains are encoded in
+    ``H``, so ``H`` must be left untouched.
+    """
     aux = dict(model)
-    if "threats" in aux:
-        aux["threats"] = np.zeros((0, 4), dtype=float)
-    if "nofly_r" in aux and aux["nofly_r"] is not None:
-        radii = np.asarray(aux["nofly_r"], dtype=float).reshape(-1)
-        aux["nofly_r"] = np.zeros_like(radii)
+    aux["threats"] = np.zeros((0, 4), dtype=float)
+    aux["nofly_c"] = np.zeros((0, 2), dtype=float)
+    aux["nofly_r"] = np.zeros(0, dtype=float)
+    aux["nofly_h"] = np.zeros(0, dtype=float)
     return aux
 
 
@@ -99,50 +104,92 @@ def _apply_eq20_top20(
     if vectors.size == 0 or not candidates:
         return vectors
     matrix = _candidate_matrix(candidates)
-    order = np.argsort(matrix[:, 0], kind="mergesort")
+    finite = np.all(np.isfinite(matrix), axis=1)
+    rank_score = np.where(finite, matrix[:, 0], np.inf)
+    order = np.argsort(rank_score, kind="mergesort")
     top_k = max(1, int(np.ceil(0.2 * vectors.shape[0])))
-    idx = order[:top_k]
+    elite_idx = order[:top_k]
+    target_idx = order[-top_k:]
     moved = vectors.copy()
-    q = np.random.uniform(0.0, 1.0, size=(top_k, vectors.shape[1]))
-    moved[idx] = moved[idx] + q * (upper - lower)
+    if elite_idx.size == 0 or target_idx.size == 0:
+        return moved
+    anchors = vectors[np.random.choice(elite_idx, size=target_idx.size, replace=True)]
+    current = vectors[target_idx]
+    pull = np.random.uniform(0.15, 0.45, size=(target_idx.size, 1))
+    noise = np.random.normal(0.0, 0.015, size=current.shape) * (upper - lower)
+    moved[target_idx] = current + pull * (anchors - current) + noise
     return np.clip(moved, lower, upper)
 
 
-def _indicator_stats(dom_obj1: np.ndarray, inf_obj1: np.ndarray) -> tuple[float, float, int]:
-    if dom_obj1.size == 0 or inf_obj1.size == 0:
-        return 0.0, 0.0, 0
-    a = float(np.min(dom_obj1))
-    b = float(np.max(dom_obj1))
-    c = float(np.min(inf_obj1))
-    d = float(np.max(inf_obj1))
-    dom_span = max(1e-12, b - a)
-    inf_span = max(1e-12, d - c)
-    # Relative-distance indicator in Sec. 4.2.4 compares spread relation.
-    relative_distance = dom_span / inf_span
-    mid = 0.5 * (c + d)
-    num_fo = float(np.sum(inf_obj1 <= mid))
-    num_la = float(np.sum(inf_obj1 > mid))
-    set_optimality = float("inf") if num_la <= 0.0 else (num_fo / num_la)
-    if relative_distance > 1.0 and set_optimality > 1.0:
+def _finite_objectives(candidates: list) -> np.ndarray:
+    if not candidates:
+        return np.zeros((0, 0), dtype=float)
+    matrix = _candidate_matrix(candidates)
+    if matrix.ndim != 2 or matrix.size == 0:
+        return np.zeros((0, 0), dtype=float)
+    return matrix[np.all(np.isfinite(matrix), axis=1)]
+
+
+def _dominates(a: np.ndarray, b: np.ndarray) -> bool:
+    return bool(np.all(a <= b) and np.any(a < b))
+
+
+def _set_optimality(dominant_obj: np.ndarray, inferior_obj: np.ndarray) -> float:
+    if dominant_obj.size == 0 or inferior_obj.size == 0:
+        return 0.0
+    dominated = 0
+    for point in inferior_obj:
+        if any(_dominates(reference, point) for reference in dominant_obj):
+            dominated += 1
+    return float(dominated / max(1, inferior_obj.shape[0]))
+
+
+def _indicator_stats(dominant_candidates: list, inferior_candidates: list) -> tuple[float, float, int]:
+    dominant_obj = _finite_objectives(dominant_candidates)
+    inferior_obj = _finite_objectives(inferior_candidates)
+    if dominant_obj.size == 0 or inferior_obj.size == 0:
+        return 0.0, 0.0, 3
+
+    dom_center = np.mean(dominant_obj, axis=0)
+    inf_center = np.mean(inferior_obj, axis=0)
+    dom_spread = float(np.mean(np.linalg.norm(dominant_obj - dom_center.reshape(1, -1), axis=1)))
+    inf_spread = float(np.mean(np.linalg.norm(inferior_obj - inf_center.reshape(1, -1), axis=1)))
+    center_distance = float(np.linalg.norm(inf_center - dom_center))
+    # Larger values mean the inferior set sits farther from the dominant set
+    # than the dominant set's own spread, matching the paper's relative-distance
+    # state concept without depending on paper-specific two-objective scaling.
+    relative_distance = center_distance / max(dom_spread + inf_spread, 1e-12)
+    set_optimality = _set_optimality(dominant_obj, inferior_obj)
+    far = relative_distance > 1.0
+    dominated_many = set_optimality >= 0.5
+    if far and dominated_many:
         return relative_distance, set_optimality, 0
-    if relative_distance <= 1.0 and set_optimality > 1.0:
+    if not far and dominated_many:
         return relative_distance, set_optimality, 1
-    if relative_distance > 1.0 and set_optimality <= 1.0:
+    if far and not dominated_many:
         return relative_distance, set_optimality, 2
     return relative_distance, set_optimality, 3
 
 
-def _objective1_stats(candidates: list) -> tuple[float, float]:
+def _objective1_stats(candidates: list, model: dict[str, Any]) -> tuple[float, float, float]:
     if not candidates:
-        return float("inf"), 0.0
+        return float("inf"), 0.0, float("inf")
     matrix = _candidate_matrix(candidates)
     if matrix.size == 0:
-        return float("inf"), 0.0
+        return float("inf"), 0.0, float("inf")
     obj1 = matrix[:, 0]
     finite = np.isfinite(obj1)
-    if not np.any(finite):
-        return float("inf"), 0.0
-    return float(np.mean(obj1[finite])), float(np.mean(finite.astype(float)))
+    violations = _constraint_violation_vector(candidates, model)
+    feasible = finite & (violations <= 1e-12)
+    if np.any(feasible):
+        mean_obj1 = float(np.mean(obj1[feasible]))
+    elif np.any(finite):
+        mean_obj1 = float(np.mean(obj1[finite]))
+    else:
+        mean_obj1 = float("inf")
+    feasible_ratio = float(np.mean(feasible.astype(float)))
+    mean_violation = float(np.mean(violations)) if violations.size else float("inf")
+    return mean_obj1, feasible_ratio, mean_violation
 
 
 def _safe_delta(before: float, after: float) -> float:
@@ -155,19 +202,21 @@ def _safe_delta(before: float, after: float) -> float:
 def _reward(
     before_candidates: list,
     after_candidates: list,
+    model: dict[str, Any],
     rel_before: float,
     rel_after: float,
     set_before: float,
     set_after: float,
 ) -> float:
-    mean_before, feasible_before = _objective1_stats(before_candidates)
-    mean_after, feasible_after = _objective1_stats(after_candidates)
+    mean_before, feasible_before, cv_before = _objective1_stats(before_candidates, model)
+    mean_after, feasible_after, cv_after = _objective1_stats(after_candidates, model)
     delta_obj1 = _safe_delta(mean_before, mean_after)
     delta_rel = _safe_delta(rel_before, rel_after)
-    delta_set = _safe_delta(set_before, set_after)
+    delta_set = set_after - set_before
     delta_feas = feasible_after - feasible_before
+    delta_cv = _safe_delta(cv_before, cv_after)
     # Keep reward aligned with paper focus on Obj1 while reflecting indicator changes.
-    return float(0.70 * delta_obj1 + 0.15 * delta_rel + 0.15 * delta_set + 0.20 * delta_feas)
+    return float(0.45 * delta_obj1 + 0.15 * delta_rel + 0.15 * delta_set + 0.25 * delta_feas + 0.20 * delta_cv)
 
 
 def _apply_action(
@@ -287,20 +336,28 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
         main_vectors = np.random.uniform(lower, upper, size=(pop_size, dimensions))
         assistant_vectors = np.random.uniform(lower, upper, size=(pop_size, dimensions))
         main_candidates = _evaluate_population(main_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-        assistant_candidates = _evaluate_population(assistant_vectors, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+        assistant_candidates = _evaluate_population(
+            assistant_vectors, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints
+        )
         hv_history = np.zeros((max_it, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
         for generation in range(1, stage1_gens + 1):
             off_main = _variation(main_vectors, lower, upper, crossover_prob, mutation_prob)
             off_assist = _variation(assistant_vectors, lower, upper, crossover_prob, mutation_prob)
             off_main_cand = _evaluate_population(off_main, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-            off_assist_main_cand = _evaluate_population(off_assist, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            off_assist_main_cand = _evaluate_population(
+                off_assist, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
             merged_main_v = np.vstack([main_vectors, off_main, off_assist])
             merged_main_c = list(main_candidates) + list(off_main_cand) + list(off_assist_main_cand)
             main_vectors, main_candidates = _select_nsga2(merged_main_v, merged_main_c, model, pop_size)
 
-            off_assist_cand = _evaluate_population(off_assist, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-            off_main_assist_cand = _evaluate_population(off_main, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            off_assist_cand = _evaluate_population(
+                off_assist, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
+            off_main_assist_cand = _evaluate_population(
+                off_main, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
             merged_assist_v = np.vstack([assistant_vectors, off_assist, off_main])
             merged_assist_c = list(assistant_candidates) + list(off_assist_cand) + list(off_main_assist_cand)
             assistant_vectors, assistant_candidates = _select_nsga2(
@@ -310,7 +367,9 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
             main_vectors = _apply_eq20_top20(main_vectors, main_candidates, lower, upper)
             assistant_vectors = _apply_eq20_top20(assistant_vectors, assistant_candidates, lower, upper)
             main_candidates = _evaluate_population(main_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-            assistant_candidates = _evaluate_population(assistant_vectors, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            assistant_candidates = _evaluate_population(
+                assistant_vectors, aux_model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
 
             if params.compute_metrics:
                 matrix = _candidate_matrix(main_candidates)
@@ -343,11 +402,8 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
                 dom_cand = _evaluate_population(dominant_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
 
                 inf_cand = _evaluate_population(inferior_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-                rel_before, set_before, state = _indicator_stats(_candidate_matrix(dom_cand)[:, 0], _candidate_matrix(inf_cand)[:, 0])
-                if np.random.rand() < epsilon:
-                    action = int(np.random.randint(0, 3))
-                else:
-                    action = int(np.argmax(q_table[state]))
+                rel_before, set_before, state = _indicator_stats(dom_cand, inf_cand)
+                action = int(np.random.randint(0, 3)) if np.random.rand() < epsilon else int(np.argmax(q_table[state]))
                 acted = _apply_action(
                     action=action,
                     inferior=inferior_vectors,
@@ -362,18 +418,19 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
                 inf_off = _variation(acted, lower, upper, crossover_prob, mutation_prob)
                 inf_off_cand = _evaluate_population(inf_off, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
                 inf_merge_v = np.vstack([inferior_vectors, inf_off, acted])
-                inf_merge_c = list(inf_cand) + list(inf_off_cand) + list(
-                    _evaluate_population(acted, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+                inf_merge_c = (
+                    list(inf_cand)
+                    + list(inf_off_cand)
+                    + list(_evaluate_population(acted, model, fleet_size=fleet_size, n_waypoints=n_waypoints))
                 )
                 keep_inf = max(1, pop_size - split)
                 inferior_vectors, inf_cand_new = _select_nsga2(inf_merge_v, inf_merge_c, model, keep_inf)
 
-                rel_after, set_after, next_state = _indicator_stats(
-                    _candidate_matrix(dom_cand)[:, 0], _candidate_matrix(inf_cand_new)[:, 0]
-                )
+                rel_after, set_after, next_state = _indicator_stats(dom_cand, inf_cand_new)
                 reward = _reward(
                     before_candidates=inf_cand,
                     after_candidates=inf_cand_new,
+                    model=model,
                     rel_before=rel_before,
                     rel_after=rel_after,
                     set_before=set_before,
@@ -385,7 +442,9 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
                 )
 
                 main_vectors = np.vstack([dominant_vectors, inferior_vectors])
-                main_candidates = _evaluate_population(main_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+                main_candidates = _evaluate_population(
+                    main_vectors, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+                )
                 main_vectors, main_candidates = _select_nsga2(main_vectors, main_candidates, model, pop_size)
 
                 if params.compute_metrics:
@@ -407,6 +466,19 @@ def run_tskac_nsga2(model: dict[str, Any], params: BenchmarkParams) -> np.ndarra
             runtime_sec=float(time.perf_counter() - run_start),
             gpu_backend="numpy:cpu",
             gpu_peak_bytes=0.0,
+            run_metadata={
+                "algorithmName": "TSKAC-NSGA-II",
+                "optimizerBackend": "clean-room TSKAC-NSGA-II native Python fleet optimizer",
+                "cleanRoomImplementation": True,
+                "pythonProblemEvaluation": True,
+                "benchmarkObjectiveDuringSearch": True,
+                "nativePopulationLoop": True,
+                "nativeGenerationLoop": True,
+                "assistantTaskEvaluation": "benchmark terrain with threat/no-fly pressure removed",
+                "finalReporting": "shared_multi_objective_benchmark",
+                "population": int(params.population),
+                "generations": int(max_it),
+            },
         )
 
         if params.compute_metrics:

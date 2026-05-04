@@ -14,12 +14,16 @@ dependencies = [
   "matplotlib>=3.7",
   "pyyaml>=6.0",
   "numba>=0.58.0",
+  "torch>=2.10",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "coverage[toml]>=7.0",
     "hypothesis>=6.0",
+    "pyright>=1.1.400",
     "pytest>=7.0",
+    "ruff>=0.8.0",
 ]
 
 [project.scripts]
@@ -27,3 +31,66 @@ uav-benchmark = "uav_benchmark.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["uav_benchmark*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+  "archives",
+  "logs",
+  "output",
+  "paper",
+  "research/reference_code",
+  "results",
+  "scripts/legacy",
+  "template",
+  "tmp",
+  "tmp_inspect",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+  "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E402", "SIM117"]
+"uav_benchmark/__init__.py" = ["E402"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+include = ["uav_benchmark", "scripts", "tests"]
+exclude = [
+  "**/__pycache__",
+  ".venv",
+  "archives",
+  "logs",
+  "output",
+  "results",
+  "scripts/legacy",
+  "template",
+  "tmp",
+  "tmp_inspect",
+]
+reportMissingTypeStubs = false
+reportUnsupportedDunderAll = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+
+[tool.coverage.run]
+branch = true
+source = ["uav_benchmark"]
+omit = [
+  "uav_benchmark/algorithms/*/legacy_core.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 60

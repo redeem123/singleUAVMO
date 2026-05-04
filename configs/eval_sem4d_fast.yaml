@@ -1,0 +1,24 @@
+# Fast SEM-4D validation protocol.
+mode: fleet
+scenarioSet: paper_medium
+algorithms: ["SEM-4D"]
+allowExperimentalAlgorithms: true
+generations: 20
+population: 30
+runs: 2
+computeMetrics: true
+safeDist: 20.0
+droneSize: 1.0
+separationMin: 10.0
+maxTurnDeg: 75.0
+fleetSizes: [3]
+seed: 19
+gpuMode: off
+problemNames: ["c_100", "m_100", "s_120"]
+metricInterval: 5
+sem4dShieldIterations: 4
+sem4dTimeSamples: 48
+sem4dMaxShieldInsertions: 16
+sem4dRMP: 0.65
+sem4dUavTransferRate: 0.25
+sem4dRepairGain: 0.65

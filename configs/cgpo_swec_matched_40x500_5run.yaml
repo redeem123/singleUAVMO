@@ -1,0 +1,30 @@
+# Publication-minimum matched CGPO/SWEC comparison.
+# Reduced but defensible table protocol: population 40 x 500 generations x 5 runs.
+allowExperimentalAlgorithms: true
+algorithms:
+  - CGPO
+  - NSGA-II
+  - MOEAD
+  - NMOPSO
+cgpoAblationVariants:
+  - full
+cgpoTraceEnabled: true
+runs: 5
+generations: 500
+population: 40
+seed: 11
+mode: fleet
+fleetSizes: [3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["c_100", "m_100", "s_120"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 40
+metricInterval: 10
+resumeExistingRuns: true
+maxWorkers: 10

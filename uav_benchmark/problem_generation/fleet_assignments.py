@@ -21,10 +21,7 @@ def _sample_xy(rng: np.random.Generator, xmin: float, xmax: float, ymin: float, 
 def _enforce_min_distance(points: list[np.ndarray], candidate: np.ndarray, separation_min: float) -> bool:
     if not points:
         return True
-    for point in points:
-        if np.linalg.norm(point[:2] - candidate[:2]) < separation_min:
-            return False
-    return True
+    return all(np.linalg.norm(point[:2] - candidate[:2]) >= separation_min for point in points)
 
 
 def _sample_endpoint(
@@ -63,10 +60,7 @@ def _complete_point_set(
 
     candidate_count = max(2048, target_count * 1024)
     candidates = np.vstack(
-        [
-            _sample_endpoint(rng, x_low, x_high, ymin, ymax, z_low, z_high)
-            for _ in range(candidate_count)
-        ]
+        [_sample_endpoint(rng, x_low, x_high, ymin, ymax, z_low, z_high) for _ in range(candidate_count)]
     )
     chosen = [np.asarray(point, dtype=float).copy() for point in points]
     while len(chosen) < target_count:

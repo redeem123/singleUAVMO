@@ -110,7 +110,9 @@ def compute_metrics(results_dir: Path, config: MetricConfig | None = None) -> No
             continue
         if cfg.target_algorithms and algorithm_dir.name not in cfg.target_algorithms:
             continue
-        problem_dirs = [item for item in sorted(algorithm_dir.iterdir()) if item.is_dir() and not item.name.startswith(".")]
+        problem_dirs = [
+            item for item in sorted(algorithm_dir.iterdir()) if item.is_dir() and not item.name.startswith(".")
+        ]
         for problem_dir in problem_dirs:
             problem_name = problem_dir.name
             if cfg.target_problems and problem_name not in cfg.target_problems:
@@ -134,7 +136,9 @@ def compute_metrics(results_dir: Path, config: MetricConfig | None = None) -> No
                     picks = rng.permutation(pop_obj.shape[0])[: cfg.max_points]
                     pop_obj = pop_obj[picks]
                 reference = ref_points.get(problem_name)
-                hv = cal_metric(1, pop_obj, problem_index, objective_count or pop_obj.shape[1], cfg.hv_samples, reference)
+                hv = cal_metric(
+                    1, pop_obj, problem_index, objective_count or pop_obj.shape[1], cfg.hv_samples, reference
+                )
                 mission_conflict = _load_mission_conflict(run_dir)
                 best_scores.append([hv, mission_conflict])
             if best_scores:

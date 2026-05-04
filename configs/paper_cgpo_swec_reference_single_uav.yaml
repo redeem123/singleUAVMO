@@ -1,0 +1,32 @@
+# Single-UAV reference-code comparison for the CGPO/SWEC paper.
+# These methods preserve author/reference-code mechanics where feasible, but
+# some are single-UAV or special-formulation algorithms. Report them in a
+# separate fleet-size-1 table instead of mixing them into the main fleet table.
+allowExperimentalAlgorithms: true
+algorithms:
+  - CGPO
+  - MOEA-2DE
+  - EMMOP
+runs: 30
+generations: 500
+population: 100
+seed: 11
+mode: fleet
+fleetSizes: [1]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["c_100", "m_100", "s_120"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 100
+metricInterval: 10
+resumeExistingRuns: true
+maxWorkers: 4
+cgpoUseCigEdgeCoupling: true
+cgpoUsePpfPressure: true
+cgpoUseOvoVariation: true
+cgpoUseOvoCoordination: true

@@ -1,0 +1,26 @@
+allowExperimentalAlgorithms: true
+algorithms:
+  - DTAPP-IICR
+runs: 1
+generations: 500
+population: 100
+seed: 11
+mode: fleet
+fleetSizes: [3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["c_100"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 100
+metricInterval: 10
+resumeExistingRuns: false
+maxWorkers: 1
+dtappMaxIterations: 500
+dtappCutoffTime: 480
+dtappRoundTrip: false
+dtappDepth: 8

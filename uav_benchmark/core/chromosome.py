@@ -69,7 +69,7 @@ class Chromosome:
     high_bound: np.ndarray = field(default_factory=lambda: np.array([], dtype=float))
 
     @classmethod
-    def new(cls, model: dict[str, Any]) -> "Chromosome":
+    def new(cls, model: dict[str, Any]) -> Chromosome:
         dim = int(model["n"])
         vector = np.zeros((dim, 3), dtype=float)
         vector[0] = np.asarray(model["start"], dtype=float).reshape(-1)[:3]
@@ -82,7 +82,7 @@ class Chromosome:
         high_bound[-1] = bound
         return cls(rnvec=vector, path=vector.copy(), high_bound=high_bound)
 
-    def copy(self) -> "Chromosome":
+    def copy(self) -> Chromosome:
         cloned = Chromosome(
             rnvec=self.rnvec.copy(),
             path=self.path.copy(),
@@ -98,11 +98,8 @@ class Chromosome:
         )
         return cloned
 
-    def initialize(self, model: dict[str, Any]) -> "Chromosome":
-        if int(model.get("ymax", 0)) == 200:
-            variation = 20.0
-        else:
-            variation = 5.0
+    def initialize(self, model: dict[str, Any]) -> Chromosome:
+        variation = 20.0 if int(model.get("ymax", 0)) == 200 else 5.0
         n_points = int(model["n"])
         interpolation = np.linspace(0.0, 1.0, n_points)
         start = np.asarray(model["start"], dtype=float).reshape(-1)[:3]
@@ -130,11 +127,11 @@ class Chromosome:
         segment_3 = float(np.linalg.norm(self.path[index, :2] - self.path[index - 2, :2]))
         if segment_1 <= 1e-12 or segment_2 <= 1e-12:
             return None
-        cosine_alpha = (segment_1 ** 2 + segment_2 ** 2 - segment_3 ** 2) / (2.0 * segment_1 * segment_2)
+        cosine_alpha = (segment_1**2 + segment_2**2 - segment_3**2) / (2.0 * segment_1 * segment_2)
         cosine_alpha = float(np.clip(cosine_alpha, -1.0, 1.0))
         return float(math.degrees(math.acos(cosine_alpha)))
 
-    def adjust_constraint_turning_angle(self, model: dict[str, Any]) -> "Chromosome":
+    def adjust_constraint_turning_angle(self, model: dict[str, Any]) -> Chromosome:
         self.path = self.rnvec.copy()
         self.path[0, 0] = float(np.asarray(model["start"]).reshape(-1)[0])
         self.path[0, 1] = float(np.asarray(model["start"]).reshape(-1)[1])
@@ -150,23 +147,32 @@ class Chromosome:
             horizontal_max = 5.0
         for point_index in range(1, n_points - 1):
             retries = 0
-            while point_index > 2 and self._horizontal_turn_violation(point_index, max_turn_deg=max_turn_deg) and retries < 10:
+            while (
+                point_index > 2
+                and self._horizontal_turn_violation(point_index, max_turn_deg=max_turn_deg)
+                and retries < 10
+            ):
                 if np.random.rand() < 0.5:
-                    self.path[point_index, 1] = self.path[point_index - 1, 1] + np.random.uniform(horizontal_min, horizontal_max)
+                    self.path[point_index, 1] = self.path[point_index - 1, 1] + np.random.uniform(
+                        horizontal_min, horizontal_max
+                    )
                 else:
-                    self.path[point_index, 0] = self.path[point_index - 1, 0] + np.random.uniform(horizontal_min, horizontal_max)
-                self.path[point_index, 0] = np.clip(self.path[point_index, 0], float(model["xmin"]), float(model["xmax"]))
-                self.path[point_index, 1] = np.clip(self.path[point_index, 1], float(model["ymin"]), float(model["ymax"]))
+                    self.path[point_index, 0] = self.path[point_index - 1, 0] + np.random.uniform(
+                        horizontal_min, horizontal_max
+                    )
+                self.path[point_index, 0] = np.clip(
+                    self.path[point_index, 0], float(model["xmin"]), float(model["xmax"])
+                )
+                self.path[point_index, 1] = np.clip(
+                    self.path[point_index, 1], float(model["ymin"]), float(model["ymax"])
+                )
                 retries += 1
 
             horizontal_distance = float(np.linalg.norm(self.path[point_index, :2] - self.path[point_index - 1, :2]))
             max_delta_z = horizontal_distance * math.tan(math.radians(60.0))
             min_height = _safe_height_envelope(model, self.path[point_index, 0], self.path[point_index, 1])
             previous_height = self.path[point_index - 1, 2]
-            if min_height < previous_height - max_delta_z:
-                target_height = previous_height - max_delta_z
-            else:
-                target_height = min_height
+            target_height = previous_height - max_delta_z if min_height < previous_height - max_delta_z else min_height
             self.path[point_index, 2] = target_height
 
         end_point = np.asarray(model["end"], dtype=float).reshape(-1)[:3]
@@ -177,7 +183,7 @@ class Chromosome:
         self.rnvec = self.path.copy()
         return self
 
-    def evaluate(self, model: dict[str, Any]) -> "Chromosome":
+    def evaluate(self, model: dict[str, Any]) -> Chromosome:
         try:
             objectives = evaluate_path(self.path, model)
             if objectives.shape[0] != 4:

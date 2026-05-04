@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import argparse
 import sys
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -12,7 +13,10 @@ from uav_benchmark.benchmark import run_benchmark
 from uav_benchmark.config import BenchmarkParams
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the default UAV benchmark protocol.")
+    parser.parse_args(argv)
+
     project_root = PROJECT_ROOT
     params = BenchmarkParams(
         generations=500,

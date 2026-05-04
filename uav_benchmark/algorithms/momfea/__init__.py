@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 
-from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.algorithms.shared.fleet_runner import (
     _build_bounds,
     _ensure_fleet_endpoints,
@@ -18,6 +17,7 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
 from uav_benchmark.algorithms.shared.pso_types import Candidate
+from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.core.nsga2_ops import n_d_sort, tournament_selection
 from uav_benchmark.io.matlab import save_mat
@@ -85,10 +85,7 @@ def _make_offspring(
             child_vec = p1.vector.copy()
         child_vec += np.random.randn(*child_vec.shape) * mutation_std * (upper - lower)
         child_vec = np.clip(child_vec, lower, upper)
-        if p1.task_id == p2.task_id:
-            child_task = p1.task_id
-        else:
-            child_task = int(np.random.choice([p1.task_id, p2.task_id]))
+        child_task = p1.task_id if p1.task_id == p2.task_id else int(np.random.choice([p1.task_id, p2.task_id]))
         offspring.append(MTIndividual(vector=child_vec, objective=np.full(4, np.inf), task_id=child_task))
     return offspring
 
@@ -123,11 +120,7 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
 
     results_path = params.results_dir / params.problem_name
     ensure_dir(results_path)
-    run_scores = (
-        np.zeros((params.runs, 2), dtype=float)
-        if params.compute_metrics
-        else np.zeros((0, 2), dtype=float)
-    )
+    run_scores = np.zeros((params.runs, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
     crossover_rate = float(params.extra.get("mfeaRMP", 0.9))
     mutation_std = float(params.extra.get("mfeaMutationStd", 0.05))
@@ -163,32 +156,31 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
         task2_mask = init_task_ids == 2
         task1_mask = ~task2_mask
 
-        pop_cands_t2 = _evaluate_task_candidates(
-            init_vectors[task2_mask], 2, model, aux_model, fleet_size, n_waypoints
-        ) if np.any(task2_mask) else []
-        pop_cands_t1 = _evaluate_task_candidates(
-            init_vectors[task1_mask], 1, model, aux_model, fleet_size, n_waypoints
-        ) if np.any(task1_mask) else []
+        pop_cands_t2 = (
+            _evaluate_task_candidates(init_vectors[task2_mask], 2, model, aux_model, fleet_size, n_waypoints)
+            if np.any(task2_mask)
+            else []
+        )
+        pop_cands_t1 = (
+            _evaluate_task_candidates(init_vectors[task1_mask], 1, model, aux_model, fleet_size, n_waypoints)
+            if np.any(task1_mask)
+            else []
+        )
 
         population: list[MTIndividual] = []
         t2_iter = iter(pop_cands_t2)
         t1_iter = iter(pop_cands_t1)
         for i in range(pop_size):
-            if init_task_ids[i] == 2:
-                cand = next(t2_iter)
-            else:
-                cand = next(t1_iter)
-            population.append(MTIndividual(
-                vector=init_vectors[i].copy(),
-                objective=cand.objective.copy(),
-                task_id=int(init_task_ids[i]),
-            ))
+            cand = next(t2_iter) if init_task_ids[i] == 2 else next(t1_iter)
+            population.append(
+                MTIndividual(
+                    vector=init_vectors[i].copy(),
+                    objective=cand.objective.copy(),
+                    task_id=int(init_task_ids[i]),
+                )
+            )
 
-        hv_hist = (
-            np.zeros((generations, 2), dtype=float)
-            if params.compute_metrics
-            else np.zeros((0, 2), dtype=float)
-        )
+        hv_hist = np.zeros((generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
 
         # ── Generation loop ────────────────────────────────────────────
         for gen in range(1, generations + 1):
@@ -201,8 +193,15 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
                 gen_mutation = mutation_std
 
             offspring = _make_offspring(
-                population, model, aux_model, fleet_size, n_waypoints,
-                gen_crossover, gen_mutation, lower, upper,
+                population,
+                model,
+                aux_model,
+                fleet_size,
+                n_waypoints,
+                gen_crossover,
+                gen_mutation,
+                lower,
+                upper,
             )
 
             # Evaluate offspring with their assigned task
@@ -212,13 +211,13 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
             if off_t2:
                 vecs_t2 = np.stack([o.vector for _, o in off_t2])
                 cands_t2 = _evaluate_task_candidates(vecs_t2, 2, model, aux_model, fleet_size, n_waypoints)
-                for (idx, _), cand in zip(off_t2, cands_t2):
+                for (idx, _), cand in zip(off_t2, cands_t2, strict=False):
                     offspring[idx].objective = cand.objective.copy()
 
             if off_t1:
                 vecs_t1 = np.stack([o.vector for _, o in off_t1])
                 cands_t1 = _evaluate_task_candidates(vecs_t1, 1, model, aux_model, fleet_size, n_waypoints)
-                for (idx, _), cand in zip(off_t1, cands_t1):
+                for (idx, _), cand in zip(off_t1, cands_t1, strict=False):
                     offspring[idx].objective = cand.objective.copy()
 
             merged = population + offspring
@@ -244,9 +243,7 @@ def run_momfea_core(model: dict[str, Any], params: BenchmarkParams, algorithm_na
 
         # Re-evaluate final population with primary model to get Candidate objects
         final_vecs = np.stack([ind.vector for ind in target_population])
-        final_candidates = _evaluate_task_candidates(
-            final_vecs, 2, model, aux_model, fleet_size, n_waypoints
-        )
+        final_candidates = _evaluate_task_candidates(final_vecs, 2, model, aux_model, fleet_size, n_waypoints)
 
         ensure_dir(run_dir)
         if params.compute_metrics and hv_hist.shape[0] > 0:

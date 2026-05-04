@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """MFO-SPEA2 runner adapted for this benchmark.
 
 Core workflow is adapted from PlatEMO's MFO-SPEA2 implementation:
@@ -8,6 +6,8 @@ Core workflow is adapted from PlatEMO's MFO-SPEA2 implementation:
 - shared offspring generation,
 - SPEA2-style environmental selection for both tasks.
 """
+
+from __future__ import annotations
 
 import time
 from typing import Any
@@ -26,7 +26,7 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
-from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate, _sanitize_objectives, _pairwise_distance
+from uav_benchmark.algorithms.shared.pareto_utils import _clone_candidate, _pairwise_distance, _sanitize_objectives
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
@@ -225,7 +225,9 @@ def _run_fleet_mfo_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.n
         _, rank_sp = _cal_fitness(_candidate_matrix(source_candidates), source_cv - initial_e.reshape(1, -1))
 
         max_k = max(1, int(params.generations) - 1)
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             eps_n = _reduce_boundary(initial_e, k=generation, max_k=max_k)
@@ -245,7 +247,9 @@ def _run_fleet_mfo_spea2(model: dict[str, Any], params: BenchmarkParams) -> np.n
             elif offspring.shape[0] == 0:
                 offspring = np.random.uniform(lower, upper, size=(pop_size, dimensions))
 
-            offspring_candidates = _evaluate_population(offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            offspring_candidates = _evaluate_population(
+                offspring, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
             offspring_cv = _constraint_violation_vector(offspring_candidates, model).reshape(-1, 1)
 
             # Target task environmental selection

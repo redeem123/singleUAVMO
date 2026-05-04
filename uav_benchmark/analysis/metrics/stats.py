@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from uav_benchmark.analysis.metrics.compute import MetricConfig, _load_run_popobj, _sanitize_popobj, _build_ref_points
+from uav_benchmark.analysis.metrics.compute import MetricConfig, _build_ref_points, _load_run_popobj, _sanitize_popobj
 from uav_benchmark.analysis.metrics.feasibility import load_mission_feasible_mask
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import load_mat, save_mat
@@ -72,7 +72,11 @@ def statistical_analysis(results_dir: Path, config: MetricConfig | None = None) 
                     picks = rng.permutation(pop_obj.shape[0])[: cfg.max_points]
                     pop_obj = pop_obj[picks]
                 reference = ref_points.get(problem_dir.name)
-                hv_scores.append(cal_metric(1, pop_obj, problem_index, objective_count or pop_obj.shape[1], cfg.hv_samples, reference))
+                hv_scores.append(
+                    cal_metric(
+                        1, pop_obj, problem_index, objective_count or pop_obj.shape[1], cfg.hv_samples, reference
+                    )
+                )
                 mission_file = run_dir / "mission_stats.mat"
                 conflict = 0.0
                 if mission_file.exists():

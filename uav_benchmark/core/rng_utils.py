@@ -4,7 +4,9 @@ All stochastic functions in the benchmark should accept an optional
 ``rng: np.random.Generator | None`` parameter.  This module provides
 ``ensure_rng`` to normalize that argument into a proper Generator.
 """
+
 from __future__ import annotations
+
 import numpy as np
 
 

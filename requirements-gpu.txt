@@ -4,7 +4,9 @@
 # NVIDIA CUDA example (adjust CUDA build tag):
 #   pip install cupy-cuda12x
 #
-# PyTorch examples:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121   # CUDA
-#   pip install torch                                                     # Apple Silicon MPS / CPU
-
+# Torch-backed SAC-SMOPSO workflows install the default CPU/MPS wheel from
+# requirements-python.txt. On NVIDIA CUDA 12.1 hosts, reinstall Torch from this
+# file explicitly, for example:
+#   python3 -m pip install --upgrade --force-reinstall -r requirements-gpu.txt
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.10; platform_system != "Darwin"

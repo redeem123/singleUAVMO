@@ -1,0 +1,32 @@
+# Reduced-budget smoke version of paper_cgpo_swec_ablation.yaml -- same six
+# conceptually-pure variants, smaller population/generations/runs for
+# pre-flight integration tests.
+allowExperimentalAlgorithms: true
+algorithms: ["CGPO"]
+cgpoAblationVariants:
+  - full
+  - random_only
+  - no_cig_edge_coupling
+  - no_ppf_pressure
+  - no_ovo_variation
+  - no_ovo_fleet_coordination
+cgpoTraceEnabled: true
+runs: 2
+generations: 2
+population: 6
+seed: 11
+mode: fleet
+fleetSizes: [3]
+separationMin: 10.0
+maxTurnDeg: 75.0
+safeDist: 20.0
+droneSize: 1.0
+scenarioSet: paper_medium
+gpuMode: "off"
+problemNames: ["s_120"]
+computeMetrics: true
+hardCollisionConstraint: true
+nRep: 20
+metricInterval: 1
+resumeExistingRuns: true
+maxWorkers: 4

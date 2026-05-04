@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """CMOSMA runner adapted for this benchmark.
 
 Core workflow is inherited from the PlatEMO CMOSMA implementation
 (C. He et al., 2022; PlatEMO educational codebase), then adapted to this
 repository's constrained fleet mission evaluator and artifact pipeline.
 """
+
+from __future__ import annotations
 
 import time
 from typing import Any
@@ -24,14 +24,12 @@ from uav_benchmark.algorithms.shared.fleet_runner import (
     _should_write_final_hv,
 )
 from uav_benchmark.algorithms.shared.nmopso_engine import _candidate_matrix
+from uav_benchmark.algorithms.shared.pareto_utils import _pairwise_distance, _sanitize_objectives
 from uav_benchmark.algorithms.shared.pso_types import Candidate
 from uav_benchmark.config import BenchmarkParams
 from uav_benchmark.core.metrics import cal_metric
 from uav_benchmark.io.matlab import save_mat
 from uav_benchmark.io.results import ensure_dir
-
-
-from uav_benchmark.algorithms.shared.pareto_utils import _sanitize_objectives, _pairwise_distance
 
 
 def _cal_fitness(pop_obj: np.ndarray, pop_con: np.ndarray | None = None) -> np.ndarray:
@@ -179,7 +177,9 @@ def _update_som(
         if not np.any(neighborhood):
             continue
         influence = np.exp(-latent_distance[nearest, neighborhood]).reshape(-1, 1)
-        updated[neighborhood] = updated[neighborhood] + tau * influence * (sample.reshape(1, -1) - updated[neighborhood])
+        updated[neighborhood] = updated[neighborhood] + tau * influence * (
+            sample.reshape(1, -1) - updated[neighborhood]
+        )
     return updated
 
 
@@ -205,10 +205,7 @@ def _mating_pool(xu: np.ndarray, neighbors: np.ndarray) -> np.ndarray:
     pool = np.zeros(n_points, dtype=int)
     all_indices = np.arange(n_points, dtype=int)
     for neuron_idx in range(n_points):
-        if neighbors.size > 0 and np.random.rand() < 0.9:
-            q = xu[neighbors[neuron_idx]]
-        else:
-            q = all_indices
+        q = xu[neighbors[neuron_idx]] if neighbors.size > 0 and np.random.rand() < 0.9 else all_indices
         if q.size == 0:
             pool[neuron_idx] = int(np.random.randint(0, n_points))
         else:
@@ -243,7 +240,7 @@ def _som_shape(population: int, latent_dim: int, extra: dict[str, Any]) -> tuple
         try:
             parsed = [max(1, int(float(item))) for item in raw]
             return tuple(parsed)
-        except Exception:
+        except (TypeError, ValueError):
             pass
     base = max(1, int(np.ceil(float(max(1, population)) ** (1.0 / float(max(1, latent_dim))))))
     return tuple(base for _ in range(latent_dim))
@@ -315,7 +312,9 @@ def _run_fleet_cmosma(model: dict[str, Any], params: BenchmarkParams) -> np.ndar
         w2 = s_train2.copy()
 
         max_fe = max(1, int(params.generations) * pop_size)
-        hv_history = np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        hv_history = (
+            np.zeros((params.generations, 2), dtype=float) if params.compute_metrics else np.zeros((0, 2), dtype=float)
+        )
 
         for generation in range(1, params.generations + 1):
             fe = int((generation - 1) * pop_size)
@@ -333,8 +332,12 @@ def _run_fleet_cmosma(model: dict[str, Any], params: BenchmarkParams) -> np.ndar
             parent2 = np.vstack([ap_vectors[xu2], ap_vectors[mating2]])
             offspring1 = _sbx_mutation(parent1, lower, upper)
             offspring2 = _sbx_mutation(parent2, lower, upper)
-            offspring1_candidates = _evaluate_population(offspring1, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
-            offspring2_candidates = _evaluate_population(offspring2, model, fleet_size=fleet_size, n_waypoints=n_waypoints)
+            offspring1_candidates = _evaluate_population(
+                offspring1, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
+            offspring2_candidates = _evaluate_population(
+                offspring2, model, fleet_size=fleet_size, n_waypoints=n_waypoints
+            )
 
             merged_fp_vectors = np.vstack([fp_vectors, offspring1, offspring2])
             merged_fp_candidates = fp_candidates + offspring1_candidates + offspring2_candidates

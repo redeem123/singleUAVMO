@@ -17,7 +17,7 @@
 ## Baseline Artifacts
 - Script: `scripts/capture_baseline.py`
 - Output: `docs/python_port/baseline_manifest.json`
-- Purpose: deterministic hash manifest for MATLAB-produced outputs (`final_popobj.mat`, `gen_hv.mat`, `final_hv.mat`) used for strict parity checks.
+- Purpose: deterministic hash manifest for MATLAB-produced outputs (`final_popobj.mat`, `gen_hv.mat`, `final_hv.mat`) used for strict parity checks. The checked-in file is a portable placeholder; generate a non-empty local manifest after placing MATLAB baseline outputs under `results/`.
 
 ## Parity Workflow
 1. Capture MATLAB baseline hashes using `scripts/capture_baseline.py`.
